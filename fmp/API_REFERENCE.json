@@ -1,0 +1,792 @@
+{
+  "_description": "FMP Package API Reference - Auto-generated schema for all endpoints",
+  "_usage": "fmp.fetch('endpoint_name', symbol='AAPL', ...)",
+  "_note": "All responses are pandas DataFrames. Import FMPEmptyResponseError for endpoints that may return no data.",
+  "_generated": "2026-02-02",
+  "endpoints": {
+    "analyst_estimates": {
+      "description": "Analyst estimates (EPS, revenue forecasts)",
+      "category": "analyst",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "period",
+          "type": "enum",
+          "required": false,
+          "default": "annual",
+          "description": "Estimate period",
+          "enum_values": [
+            "annual",
+            "quarter"
+          ]
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of periods",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "date",
+        "revenueLow",
+        "revenueHigh",
+        "revenueAvg",
+        "ebitdaLow",
+        "ebitdaHigh",
+        "ebitdaAvg",
+        "ebitLow",
+        "ebitHigh",
+        "ebitAvg",
+        "netIncomeLow",
+        "netIncomeHigh",
+        "netIncomeAvg",
+        "sgaExpenseLow",
+        "sgaExpenseHigh",
+        "sgaExpenseAvg",
+        "epsAvg",
+        "epsHigh",
+        "epsLow",
+        "numAnalystsRevenue",
+        "numAnalystsEps"
+      ],
+      "cache_ttl_hours": 24,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#analyst-estimates"
+    },
+    "price_target": {
+      "description": "Analyst price target summary (high, low, median, consensus)",
+      "category": "analyst",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "lastMonthCount",
+        "lastMonthAvgPriceTarget",
+        "lastQuarterCount",
+        "lastQuarterAvgPriceTarget",
+        "lastYearCount",
+        "lastYearAvgPriceTarget",
+        "allTimeCount",
+        "allTimeAvgPriceTarget",
+        "publishers"
+      ],
+      "cache_ttl_hours": 24,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#price-target"
+    },
+    "price_target_consensus": {
+      "description": "Analyst price target consensus",
+      "category": "analyst",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "targetHigh",
+        "targetLow",
+        "targetConsensus",
+        "targetMedian"
+      ],
+      "cache_ttl_hours": 24,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#price-target"
+    },
+    "dividends": {
+      "description": "Dividend history (payment dates, amounts, frequency)",
+      "category": "dividends",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "date",
+        "recordDate",
+        "paymentDate",
+        "declarationDate",
+        "adjDividend",
+        "dividend",
+        "yield",
+        "frequency"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#stock-dividend"
+    },
+    "balance_sheet": {
+      "description": "Balance sheet data (assets, liabilities, equity)",
+      "category": "fundamentals",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "period",
+          "type": "enum",
+          "required": false,
+          "default": "annual",
+          "description": "Reporting period",
+          "enum_values": [
+            "annual",
+            "quarter"
+          ]
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of periods",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "date",
+        "symbol",
+        "reportedCurrency",
+        "cik",
+        "filingDate",
+        "acceptedDate",
+        "fiscalYear",
+        "period",
+        "cashAndCashEquivalents",
+        "shortTermInvestments",
+        "cashAndShortTermInvestments",
+        "netReceivables",
+        "accountsReceivables",
+        "otherReceivables",
+        "inventory",
+        "prepaids",
+        "otherCurrentAssets",
+        "totalCurrentAssets",
+        "propertyPlantEquipmentNet",
+        "goodwill",
+        "intangibleAssets",
+        "goodwillAndIntangibleAssets",
+        "longTermInvestments",
+        "taxAssets",
+        "otherNonCurrentAssets",
+        "totalNonCurrentAssets",
+        "otherAssets",
+        "totalAssets",
+        "totalPayables",
+        "accountPayables",
+        "otherPayables",
+        "accruedExpenses",
+        "shortTermDebt",
+        "capitalLeaseObligationsCurrent",
+        "taxPayables",
+        "deferredRevenue",
+        "otherCurrentLiabilities",
+        "totalCurrentLiabilities",
+        "longTermDebt",
+        "capitalLeaseObligationsNonCurrent",
+        "deferredRevenueNonCurrent",
+        "deferredTaxLiabilitiesNonCurrent",
+        "otherNonCurrentLiabilities",
+        "totalNonCurrentLiabilities",
+        "otherLiabilities",
+        "capitalLeaseObligations",
+        "totalLiabilities",
+        "treasuryStock",
+        "preferredStock",
+        "commonStock",
+        "retainedEarnings",
+        "additionalPaidInCapital",
+        "accumulatedOtherComprehensiveIncomeLoss",
+        "otherTotalStockholdersEquity",
+        "totalStockholdersEquity",
+        "totalEquity",
+        "minorityInterest",
+        "totalLiabilitiesAndTotalEquity",
+        "totalInvestments",
+        "totalDebt",
+        "netDebt"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#balance-sheet-statement"
+    },
+    "cash_flow": {
+      "description": "Cash flow statement data (operating, investing, financing)",
+      "category": "fundamentals",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "period",
+          "type": "enum",
+          "required": false,
+          "default": "annual",
+          "description": "Reporting period",
+          "enum_values": [
+            "annual",
+            "quarter"
+          ]
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of periods",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "date",
+        "symbol",
+        "reportedCurrency",
+        "cik",
+        "filingDate",
+        "acceptedDate",
+        "fiscalYear",
+        "period",
+        "netIncome",
+        "depreciationAndAmortization",
+        "deferredIncomeTax",
+        "stockBasedCompensation",
+        "changeInWorkingCapital",
+        "accountsReceivables",
+        "inventory",
+        "accountsPayables",
+        "otherWorkingCapital",
+        "otherNonCashItems",
+        "netCashProvidedByOperatingActivities",
+        "investmentsInPropertyPlantAndEquipment",
+        "acquisitionsNet",
+        "purchasesOfInvestments",
+        "salesMaturitiesOfInvestments",
+        "otherInvestingActivities",
+        "netCashProvidedByInvestingActivities",
+        "netDebtIssuance",
+        "longTermNetDebtIssuance",
+        "shortTermNetDebtIssuance",
+        "netStockIssuance",
+        "netCommonStockIssuance",
+        "commonStockIssuance",
+        "commonStockRepurchased",
+        "netPreferredStockIssuance",
+        "netDividendsPaid",
+        "commonDividendsPaid",
+        "preferredDividendsPaid",
+        "otherFinancingActivities",
+        "netCashProvidedByFinancingActivities",
+        "effectOfForexChangesOnCash",
+        "netChangeInCash",
+        "cashAtEndOfPeriod",
+        "cashAtBeginningOfPeriod",
+        "operatingCashFlow",
+        "capitalExpenditure",
+        "freeCashFlow",
+        "incomeTaxesPaid",
+        "interestPaid"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#cash-flow-statement"
+    },
+    "income_statement": {
+      "description": "Income statement data (revenue, net income, EPS, margins)",
+      "category": "fundamentals",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "period",
+          "type": "enum",
+          "required": false,
+          "default": "annual",
+          "description": "Reporting period",
+          "enum_values": [
+            "annual",
+            "quarter"
+          ]
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of periods",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "date",
+        "symbol",
+        "reportedCurrency",
+        "cik",
+        "filingDate",
+        "acceptedDate",
+        "fiscalYear",
+        "period",
+        "revenue",
+        "costOfRevenue",
+        "grossProfit",
+        "researchAndDevelopmentExpenses",
+        "generalAndAdministrativeExpenses",
+        "sellingAndMarketingExpenses",
+        "sellingGeneralAndAdministrativeExpenses",
+        "otherExpenses",
+        "operatingExpenses",
+        "costAndExpenses",
+        "netInterestIncome",
+        "interestIncome",
+        "interestExpense",
+        "depreciationAndAmortization",
+        "ebitda",
+        "ebit",
+        "nonOperatingIncomeExcludingInterest",
+        "operatingIncome",
+        "totalOtherIncomeExpensesNet",
+        "incomeBeforeTax",
+        "incomeTaxExpense",
+        "netIncomeFromContinuingOperations",
+        "netIncomeFromDiscontinuedOperations",
+        "otherAdjustmentsToNetIncome",
+        "netIncome",
+        "netIncomeDeductions",
+        "bottomLineNetIncome",
+        "eps",
+        "epsDiluted",
+        "weightedAverageShsOut",
+        "weightedAverageShsOutDil"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#income-statement"
+    },
+    "key_metrics": {
+      "description": "Key financial metrics (P/E, P/B, ROE, debt ratios)",
+      "category": "fundamentals",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "period",
+          "type": "enum",
+          "required": false,
+          "default": "annual",
+          "description": "Reporting period",
+          "enum_values": [
+            "annual",
+            "quarter"
+          ]
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Number of periods",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "date",
+        "fiscalYear",
+        "period",
+        "reportedCurrency",
+        "marketCap",
+        "enterpriseValue",
+        "evToSales",
+        "evToOperatingCashFlow",
+        "evToFreeCashFlow",
+        "evToEBITDA",
+        "netDebtToEBITDA",
+        "currentRatio",
+        "incomeQuality",
+        "grahamNumber",
+        "grahamNetNet",
+        "taxBurden",
+        "interestBurden",
+        "workingCapital",
+        "investedCapital",
+        "returnOnAssets",
+        "operatingReturnOnAssets",
+        "returnOnTangibleAssets",
+        "returnOnEquity",
+        "returnOnInvestedCapital",
+        "returnOnCapitalEmployed",
+        "earningsYield",
+        "freeCashFlowYield",
+        "capexToOperatingCashFlow",
+        "capexToDepreciation",
+        "capexToRevenue",
+        "salesGeneralAndAdministrativeToRevenue",
+        "researchAndDevelopementToRevenue",
+        "stockBasedCompensationToRevenue",
+        "intangiblesToTotalAssets",
+        "averageReceivables",
+        "averagePayables",
+        "averageInventory",
+        "daysOfSalesOutstanding",
+        "daysOfPayablesOutstanding",
+        "daysOfInventoryOutstanding",
+        "operatingCycle",
+        "cashConversionCycle",
+        "freeCashFlowToEquity",
+        "freeCashFlowToFirm",
+        "tangibleAssetValue",
+        "netCurrentAssetValue"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#company-key-metrics"
+    },
+    "historical_price_adjusted": {
+      "description": "Dividend-adjusted historical prices (for total return calculations)",
+      "category": "prices",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "from",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "Start date (YYYY-MM-DD)",
+          "enum_values": null
+        },
+        {
+          "name": "to",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "End date (YYYY-MM-DD)",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "date",
+        "adjOpen",
+        "adjHigh",
+        "adjLow",
+        "adjClose",
+        "volume"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#historical-stock-price-end-of-day"
+    },
+    "historical_price_eod": {
+      "description": "End-of-day historical prices (open, high, low, close, volume)",
+      "category": "prices",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "from",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "Start date (YYYY-MM-DD)",
+          "enum_values": null
+        },
+        {
+          "name": "to",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "End date (YYYY-MM-DD)",
+          "enum_values": null
+        },
+        {
+          "name": "serietype",
+          "type": "string",
+          "required": false,
+          "default": "line",
+          "description": "Series type",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "change",
+        "changePercent",
+        "vwap"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#historical-stock-price-end-of-day"
+    },
+    "profile": {
+      "description": "Company profile (name, sector, industry, description, currency)",
+      "category": "search",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "price",
+        "beta",
+        "volAvg",
+        "mktCap",
+        "lastDiv",
+        "range",
+        "changes",
+        "companyName",
+        "currency",
+        "cik",
+        "isin",
+        "cusip",
+        "exchange",
+        "exchangeShortName",
+        "industry",
+        "website",
+        "description",
+        "ceo",
+        "sector",
+        "country",
+        "fullTimeEmployees",
+        "phone",
+        "address",
+        "city",
+        "state",
+        "zip",
+        "dcfDiff",
+        "dcf",
+        "image",
+        "ipoDate",
+        "defaultImage",
+        "isEtf",
+        "isActivelyTrading",
+        "isAdr",
+        "isFund"
+      ],
+      "cache_ttl_hours": 168,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#company-profile"
+    },
+    "search": {
+      "description": "Search for companies by name or ticker",
+      "category": "search",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Search query",
+          "enum_values": null
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10,
+          "description": "Max results",
+          "enum_values": null
+        },
+        {
+          "name": "exchange",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "Filter by exchange",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "name",
+        "currency",
+        "stockExchange",
+        "exchangeShortName"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#ticker-search"
+    },
+    "treasury_rates": {
+      "description": "US Treasury rates across multiple maturities",
+      "category": "treasury",
+      "parameters": [
+        {
+          "name": "from",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "Start date (YYYY-MM-DD)",
+          "enum_values": null
+        },
+        {
+          "name": "to",
+          "type": "date",
+          "required": false,
+          "default": null,
+          "description": "End date (YYYY-MM-DD)",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "date",
+        "month1",
+        "month2",
+        "month3",
+        "month6",
+        "year1",
+        "year2",
+        "year3",
+        "year5",
+        "year7",
+        "year10",
+        "year20",
+        "year30"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#treasury-rates"
+    },
+    "earnings_transcript": {
+      "description": "Full earnings call transcript text for qualitative analysis",
+      "category": "transcripts",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "year",
+          "type": "integer",
+          "required": true,
+          "default": null,
+          "description": "Fiscal year (e.g., 2024)",
+          "enum_values": null
+        },
+        {
+          "name": "quarter",
+          "type": "integer",
+          "required": true,
+          "default": null,
+          "description": "Quarter (1-4)",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "quarter",
+        "year",
+        "date",
+        "content"
+      ],
+      "cache_ttl_hours": null,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#earnings-call-transcript"
+    },
+    "sec_filings": {
+      "description": "SEC filing metadata with links (10-K, 10-Q, 8-K, S-1, etc.)",
+      "category": "filings",
+      "parameters": [
+        {
+          "name": "symbol",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "description": "Stock symbol",
+          "enum_values": null
+        },
+        {
+          "name": "type",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "Filing type filter (10-K, 10-Q, 8-K, S-1, etc.)",
+          "enum_values": null
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 50,
+          "description": "Number of filings to return",
+          "enum_values": null
+        }
+      ],
+      "response_columns": [
+        "symbol",
+        "fillingDate",
+        "acceptedDate",
+        "cik",
+        "type",
+        "link",
+        "finalLink"
+      ],
+      "cache_ttl_hours": 24,
+      "fmp_docs_url": "https://site.financialmodelingprep.com/developer/docs#sec-filings"
+    }
+  }
+}
