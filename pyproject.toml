@@ -18,6 +18,10 @@ dependencies = [
     "zstandard",
 ]
 
+[project.urls]
+Homepage = "https://github.com/henrysouchien/fmp-mcp"
+Source = "https://github.com/henrysouchien/fmp-mcp"
+
 [project.optional-dependencies]
 estimates = ["psycopg2-binary"]
 
