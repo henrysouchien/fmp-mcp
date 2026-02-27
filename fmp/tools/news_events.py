@@ -23,12 +23,8 @@ _TIER1_WIRE = {
 # Tier 2: Credible financial journalism
 _TIER2_JOURNALISM = {
     "wsj.com",
-    "cnbc.com",
     "bloomberg.com",
-    "reuters.com",
     "ft.com",
-    "marketwatch.com",
-    "investors.com",
     "barrons.com",
 }
 
