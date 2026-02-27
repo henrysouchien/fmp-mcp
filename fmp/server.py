@@ -720,6 +720,7 @@ def get_news(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     format: Literal["summary", "full"] = "summary",
+    quality: Literal["all", "trusted", "wire", "journalism"] = "trusted",
 ) -> dict:
     """
     Fetch news articles for stocks or the broad market.
@@ -741,6 +742,11 @@ def get_news(
         format: Output format:
             - "summary": Headline, date, source, snippet per article
             - "full": Complete article data
+        quality: Source quality filter (default: "trusted"):
+            - "trusted": Wire services + credible journalism (default)
+            - "wire": Official press releases only (BusinessWire, PR Newswire, etc.)
+            - "journalism": Credible financial journalism only (WSJ, Bloomberg, etc.)
+            - "all": No filtering — includes all sources
 
     Returns:
         News data with status field ("success" or "error").
@@ -750,6 +756,7 @@ def get_news(
         "Latest market news" -> get_news(mode="general")
         "TSLA press releases" -> get_news(symbols="TSLA", mode="press")
         "News for AAPL and MSFT" -> get_news(symbols="AAPL,MSFT")
+        "Official AAPL news only" -> get_news(symbols="AAPL", quality="wire")
     """
     return _get_news(
         symbols=symbols,
@@ -758,6 +765,7 @@ def get_news(
         from_date=from_date,
         to_date=to_date,
         format=format,
+        quality=quality,
     )
 
 

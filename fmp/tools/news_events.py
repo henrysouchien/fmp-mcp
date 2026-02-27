@@ -11,6 +11,46 @@ from typing import Literal, Optional
 from ..client import FMPClient
 
 
+# --- News source quality tiers ---
+# Tier 1: Wire services — official company press releases
+_TIER1_WIRE = {
+    "businesswire.com",
+    "prnewswire.com",
+    "globenewswire.com",
+    "accesswire.com",
+}
+
+# Tier 2: Credible financial journalism
+_TIER2_JOURNALISM = {
+    "wsj.com",
+    "cnbc.com",
+    "bloomberg.com",
+    "reuters.com",
+    "ft.com",
+    "marketwatch.com",
+    "investors.com",
+    "barrons.com",
+}
+
+_QUALITY_TIERS = {
+    "all": None,  # No filtering
+    "trusted": _TIER1_WIRE | _TIER2_JOURNALISM,
+    "wire": _TIER1_WIRE,
+    "journalism": _TIER2_JOURNALISM,
+}
+
+
+def _filter_by_quality(articles: list[dict], quality: str) -> list[dict]:
+    """Filter articles to only include sources from the specified quality tier."""
+    allowed = _QUALITY_TIERS.get(quality)
+    if allowed is None:
+        return articles
+    return [
+        a for a in articles
+        if (a.get("site") or a.get("source") or "").lower() in allowed
+    ]
+
+
 # Maps event_type to FMP endpoint name
 _CALENDAR_ENDPOINTS = {
     "earnings": "earnings_calendar",
@@ -69,12 +109,15 @@ def get_news(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     format: Literal["summary", "full"] = "summary",
+    quality: Literal["all", "trusted", "wire", "journalism"] = "trusted",
 ) -> dict:
     """Fetch news articles for stocks or the broad market."""
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
         limit = max(1, min(50, limit))
+        # Over-fetch when filtering so we can still hit the requested limit
+        fetch_limit = limit * 3 if quality != "all" else limit
 
         if mode in ("stock", "press") and not symbols:
             return {
@@ -86,7 +129,7 @@ def get_news(
             }
 
         fmp = FMPClient()
-        fetch_kwargs = {"limit": limit}
+        fetch_kwargs = {"limit": fetch_limit}
         if from_date:
             fetch_kwargs["from_date"] = from_date
         if to_date:
@@ -100,6 +143,8 @@ def get_news(
             raw = fmp.fetch_raw("news_stock", symbols=symbols, **fetch_kwargs)
 
         articles = raw if isinstance(raw, list) else [raw] if raw else []
+        articles = _filter_by_quality(articles, quality)
+        articles = articles[:limit]
 
         if format == "summary":
             formatted_articles = []
