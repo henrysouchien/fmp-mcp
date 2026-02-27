@@ -1,4 +1,17 @@
-"""MCP tools for analyst estimate revision tracking."""
+"""MCP tools for analyst estimate revision tracking.
+
+This is the CLIENT-SIDE code that runs locally as part of the fmp-mcp server.
+When ESTIMATE_API_URL is set, these tools call the hosted API on EC2
+(edgar_updater/edgar_api/routes/estimates.py → edgar_updater/estimates/store.py → RDS).
+When unset, falls back to local EstimateStore (fmp/estimate_store.py → local Postgres).
+
+Also synced to fmp-mcp PyPI package (~/Documents/Jupyter/fmp-mcp/fmp/tools/estimates.py).
+
+Server-side code lives in the edgar_updater repo:
+  - edgar_updater/estimates/store.py        — EstimateStore (copy of fmp/estimate_store.py)
+  - edgar_updater/estimates/collector.py    — monthly FMP snapshot collection
+  - edgar_updater/edgar_api/routes/estimates.py — FastAPI routes (6 endpoints)
+"""
 
 from __future__ import annotations
 
