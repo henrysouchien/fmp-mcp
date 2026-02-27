@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fmp-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for Financial Modeling Prep - 19 tools for market data via Claude"
 readme = "README.md"
 license = "MIT"
@@ -17,10 +17,6 @@ dependencies = [
     "fastmcp",
     "zstandard",
 ]
-
-[project.urls]
-Homepage = "https://github.com/henrysouchien/fmp-mcp"
-Source = "https://github.com/henrysouchien/fmp-mcp"
 
 [project.optional-dependencies]
 estimates = ["psycopg2-binary"]

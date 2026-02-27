@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import date, datetime, timezone
 from typing import Literal, Optional, Any
 
+import requests as _requests
+
+# HTTP API mode (preferred) — set ESTIMATE_API_URL to use the hosted API
+_ESTIMATE_API_URL = os.getenv("ESTIMATE_API_URL")  # e.g. "https://financialmodelupdater.com"
+_ESTIMATE_API_KEY = os.getenv("EDGAR_API_KEY")
+
+# Local DB fallback — only used when ESTIMATE_API_URL is not set
 try:
     from ..estimate_store import EstimateStore
 except ImportError:
     EstimateStore = None
+
+
+def _api_get(path: str, params: dict | None = None) -> list | dict:
+    """Fetch from the hosted estimates API."""
+    params = dict(params or {})
+    if _ESTIMATE_API_KEY:
+        params["key"] = _ESTIMATE_API_KEY
+    resp = _requests.get(f"{_ESTIMATE_API_URL}{path}", params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _normalize_tickers(tickers: Optional[list[str] | str]) -> list[str]:
@@ -78,12 +96,6 @@ def get_estimate_revisions(
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
-        if EstimateStore is None:
-            return {
-                "status": "error",
-                "error": "Estimate tools require optional dependency 'psycopg2-binary'. Install fmp-mcp[estimates].",
-            }
-
         clean_ticker = str(ticker).strip().upper()
         if not clean_ticker:
             return {
@@ -91,66 +103,9 @@ def get_estimate_revisions(
                 "error": "ticker is required",
             }
 
-        with EstimateStore(read_only=True) as store:
-            latest = store.get_latest(clean_ticker, period=period)
-            if not latest:
-                return {
-                    "status": "success",
-                    "ticker": clean_ticker,
-                    "period": period,
-                    "fiscal_date": fiscal_date,
-                    "revision_count": 0,
-                    "revisions": [],
-                    "note": "No estimate snapshots found for ticker.",
-                }
-
-            resolved_fiscal = str(fiscal_date)[:10] if fiscal_date else _select_default_fiscal_date(latest)
-            if not resolved_fiscal:
-                return {
-                    "status": "success",
-                    "ticker": clean_ticker,
-                    "period": period,
-                    "fiscal_date": fiscal_date,
-                    "revision_count": 0,
-                    "revisions": [],
-                    "note": "Unable to determine fiscal_date from latest snapshots.",
-                }
-
-            revisions = store.get_revisions(
-                clean_ticker,
-                fiscal_date=resolved_fiscal,
-                period=period,
-            )
-
-            if not revisions:
-                return {
-                    "status": "success",
-                    "ticker": clean_ticker,
-                    "period": period,
-                    "fiscal_date": resolved_fiscal,
-                    "revision_count": 0,
-                    "revisions": [],
-                    "note": "No snapshots found for requested fiscal period.",
-                }
-
-            first = revisions[0]
-            last = revisions[-1]
-            eps_delta = _delta(last.get("eps_avg"), first.get("eps_avg"))
-            revenue_delta = _delta(last.get("revenue_avg"), first.get("revenue_avg"))
-
-            return {
-                "status": "success",
-                "ticker": clean_ticker,
-                "period": period,
-                "fiscal_date": resolved_fiscal,
-                "revision_count": len(revisions),
-                "first_snapshot_date": first.get("snapshot_date"),
-                "latest_snapshot_date": last.get("snapshot_date"),
-                "eps_delta": eps_delta,
-                "revenue_delta": revenue_delta,
-                "direction": _direction(eps_delta, revenue_delta),
-                "revisions": revisions,
-            }
+        if _ESTIMATE_API_URL:
+            return _get_estimate_revisions_http(clean_ticker, fiscal_date, period)
+        return _get_estimate_revisions_local(clean_ticker, fiscal_date, period)
 
     except Exception as exc:  # noqa: BLE001 - MCP tool should always return structured errors
         return {
@@ -164,6 +119,146 @@ def get_estimate_revisions(
         sys.stdout = _saved
 
 
+def _get_estimate_revisions_http(
+    clean_ticker: str,
+    fiscal_date: str | None,
+    period: str,
+) -> dict:
+    """Get estimate revisions via hosted HTTP API."""
+    latest = _api_get("/api/estimates/latest", {"ticker": clean_ticker, "period": period})
+    if not latest:
+        return {
+            "status": "success",
+            "ticker": clean_ticker,
+            "period": period,
+            "fiscal_date": fiscal_date,
+            "revision_count": 0,
+            "revisions": [],
+            "note": "No estimate snapshots found for ticker.",
+        }
+
+    resolved_fiscal = str(fiscal_date)[:10] if fiscal_date else _select_default_fiscal_date(latest)
+    if not resolved_fiscal:
+        return {
+            "status": "success",
+            "ticker": clean_ticker,
+            "period": period,
+            "fiscal_date": fiscal_date,
+            "revision_count": 0,
+            "revisions": [],
+            "note": "Unable to determine fiscal_date from latest snapshots.",
+        }
+
+    revisions = _api_get(
+        "/api/estimates/revisions",
+        {"ticker": clean_ticker, "fiscal_date": resolved_fiscal, "period": period},
+    )
+
+    if not revisions:
+        return {
+            "status": "success",
+            "ticker": clean_ticker,
+            "period": period,
+            "fiscal_date": resolved_fiscal,
+            "revision_count": 0,
+            "revisions": [],
+            "note": "No snapshots found for requested fiscal period.",
+        }
+
+    first = revisions[0]
+    last = revisions[-1]
+    eps_delta = _delta(last.get("eps_avg"), first.get("eps_avg"))
+    revenue_delta = _delta(last.get("revenue_avg"), first.get("revenue_avg"))
+
+    return {
+        "status": "success",
+        "ticker": clean_ticker,
+        "period": period,
+        "fiscal_date": resolved_fiscal,
+        "revision_count": len(revisions),
+        "first_snapshot_date": first.get("snapshot_date"),
+        "latest_snapshot_date": last.get("snapshot_date"),
+        "eps_delta": eps_delta,
+        "revenue_delta": revenue_delta,
+        "direction": _direction(eps_delta, revenue_delta),
+        "revisions": revisions,
+    }
+
+
+def _get_estimate_revisions_local(
+    clean_ticker: str,
+    fiscal_date: str | None,
+    period: str,
+) -> dict:
+    """Get estimate revisions via local EstimateStore (psycopg2)."""
+    if EstimateStore is None:
+        return {
+            "status": "error",
+            "error": "Estimate tools require either ESTIMATE_API_URL or optional dependency 'psycopg2-binary'. Install fmp-mcp[estimates].",
+        }
+
+    with EstimateStore(read_only=True) as store:
+        latest = store.get_latest(clean_ticker, period=period)
+        if not latest:
+            return {
+                "status": "success",
+                "ticker": clean_ticker,
+                "period": period,
+                "fiscal_date": fiscal_date,
+                "revision_count": 0,
+                "revisions": [],
+                "note": "No estimate snapshots found for ticker.",
+            }
+
+        resolved_fiscal = str(fiscal_date)[:10] if fiscal_date else _select_default_fiscal_date(latest)
+        if not resolved_fiscal:
+            return {
+                "status": "success",
+                "ticker": clean_ticker,
+                "period": period,
+                "fiscal_date": fiscal_date,
+                "revision_count": 0,
+                "revisions": [],
+                "note": "Unable to determine fiscal_date from latest snapshots.",
+            }
+
+        revisions = store.get_revisions(
+            clean_ticker,
+            fiscal_date=resolved_fiscal,
+            period=period,
+        )
+
+        if not revisions:
+            return {
+                "status": "success",
+                "ticker": clean_ticker,
+                "period": period,
+                "fiscal_date": resolved_fiscal,
+                "revision_count": 0,
+                "revisions": [],
+                "note": "No snapshots found for requested fiscal period.",
+            }
+
+        first = revisions[0]
+        last = revisions[-1]
+        eps_delta = _delta(last.get("eps_avg"), first.get("eps_avg"))
+        revenue_delta = _delta(last.get("revenue_avg"), first.get("revenue_avg"))
+
+        return {
+            "status": "success",
+            "ticker": clean_ticker,
+            "period": period,
+            "fiscal_date": resolved_fiscal,
+            "revision_count": len(revisions),
+            "first_snapshot_date": first.get("snapshot_date"),
+            "latest_snapshot_date": last.get("snapshot_date"),
+            "eps_delta": eps_delta,
+            "revenue_delta": revenue_delta,
+            "direction": _direction(eps_delta, revenue_delta),
+            "revisions": revisions,
+        }
+
+
 def screen_estimate_revisions(
     tickers: Optional[list[str] | str] = None,
     days: int = 30,
@@ -174,12 +269,6 @@ def screen_estimate_revisions(
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
-        if EstimateStore is None:
-            return {
-                "status": "error",
-                "error": "Estimate tools require optional dependency 'psycopg2-binary'. Install fmp-mcp[estimates].",
-            }
-
         if days < 0:
             return {
                 "status": "error",
@@ -187,35 +276,36 @@ def screen_estimate_revisions(
             }
 
         clean_tickers = _normalize_tickers(tickers)
-        with EstimateStore(read_only=True) as store:
-            target_tickers = clean_tickers or None
-            summary = store.get_revision_summary(
-                tickers=target_tickers,
-                days=days,
-                period=period,
-            )
 
-            if direction != "all":
-                summary = [item for item in summary if item.get("direction") == direction]
+        if _ESTIMATE_API_URL:
+            summary = _screen_http(clean_tickers, days, period)
+        else:
+            summary = _screen_local(clean_tickers, days, period)
 
-            summary.sort(
-                key=lambda row: abs(
-                    row.get("eps_delta")
-                    if row.get("eps_delta") is not None
-                    else (row.get("revenue_delta") or 0.0)
-                ),
-                reverse=True,
-            )
+        if isinstance(summary, dict) and summary.get("status") == "error":
+            return summary
 
-            return {
-                "status": "success",
-                "period": period,
-                "days": days,
-                "direction": direction,
-                "tickers_requested": clean_tickers if clean_tickers else "all",
-                "result_count": len(summary),
-                "results": summary,
-            }
+        if direction != "all":
+            summary = [item for item in summary if item.get("direction") == direction]
+
+        summary.sort(
+            key=lambda row: abs(
+                row.get("eps_delta")
+                if row.get("eps_delta") is not None
+                else (row.get("revenue_delta") or 0.0)
+            ),
+            reverse=True,
+        )
+
+        return {
+            "status": "success",
+            "period": period,
+            "days": days,
+            "direction": direction,
+            "tickers_requested": clean_tickers if clean_tickers else "all",
+            "result_count": len(summary),
+            "results": summary,
+        }
 
     except Exception as exc:  # noqa: BLE001 - MCP tool should always return structured errors
         return {
@@ -227,3 +317,35 @@ def screen_estimate_revisions(
         }
     finally:
         sys.stdout = _saved
+
+
+def _screen_http(
+    clean_tickers: list[str],
+    days: int,
+    period: str,
+) -> list[dict]:
+    """Get revision summary via hosted HTTP API."""
+    params: dict[str, Any] = {"days": days, "period": period}
+    if clean_tickers:
+        params["tickers"] = ",".join(clean_tickers)
+    return _api_get("/api/estimates/revision-summary", params)
+
+
+def _screen_local(
+    clean_tickers: list[str],
+    days: int,
+    period: str,
+) -> list[dict] | dict:
+    """Get revision summary via local EstimateStore."""
+    if EstimateStore is None:
+        return {
+            "status": "error",
+            "error": "Estimate tools require either ESTIMATE_API_URL or optional dependency 'psycopg2-binary'. Install fmp-mcp[estimates].",
+        }
+
+    with EstimateStore(read_only=True) as store:
+        return store.get_revision_summary(
+            tickers=clean_tickers or None,
+            days=days,
+            period=period,
+        )
