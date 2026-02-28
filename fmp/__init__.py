@@ -50,10 +50,6 @@ Available Endpoints:
 """
 
 from .client import FMPClient, fetch, get_client
-try:
-    from .estimate_store import EstimateStore
-except ImportError:
-    EstimateStore = None
 from .exceptions import (
     FMPAPIError,
     FMPAuthenticationError,
@@ -79,7 +75,6 @@ __all__ = [
     "FMPClient",
     "fetch",
     "get_client",
-    "EstimateStore",
     # Exceptions
     "FMPError",
     "FMPAPIError",
