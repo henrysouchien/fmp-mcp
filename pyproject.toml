@@ -7,7 +7,7 @@ name = "fmp-mcp"
 version = "0.3.0"
 description = "MCP server for Financial Modeling Prep - 19 tools for market data via Claude"
 readme = "README.md"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 requires-python = ">=3.11"
 dependencies = [
     "requests",
