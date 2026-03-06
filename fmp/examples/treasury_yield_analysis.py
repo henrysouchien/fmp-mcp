@@ -7,6 +7,7 @@ Analyzes:
 3. Yield curve shape comparison: start vs end of period
 """
 
+
 from fmp import FMPClient
 import pandas as pd
 import numpy as np

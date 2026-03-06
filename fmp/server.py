@@ -22,6 +22,8 @@ import sys
 _real_stdout = sys.stdout  # Save for MCP
 sys.stdout = sys.stderr  # All prints/logs now go to stderr
 
+import json
+from typing import Any
 from typing import Literal, Optional
 
 from fastmcp import FastMCP
@@ -91,13 +93,53 @@ for a one-call morning market briefing.""",
 )
 
 
+def parse_list(value: Any, *, coerce=str) -> list | None:
+    """Parse MCP list params that may arrive as JSON or comma-separated strings."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [coerce(v) for v in value]
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    else:
+        if isinstance(parsed, list):
+            return [coerce(v) for v in parsed]
+        raise ValueError(f"Expected JSON array, got {type(parsed).__name__}")
+
+    return [coerce(v.strip()) for v in text.split(",") if v.strip()]
+
+
+def parse_json_list(value: Any) -> list | None:
+    """Parse list-of-dict MCP params that may arrive as JSON strings."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, list):
+        raise ValueError(f"Expected JSON array, got {type(parsed).__name__}")
+    return parsed
+
+
 @mcp.tool()
 def fmp_fetch(
     endpoint: str,
     symbol: Optional[str] = None,
     period: Optional[Literal["annual", "quarter"]] = None,
     limit: Optional[int] = None,
-    columns: Optional[list[str]] = None,
+    columns: Optional[str] = None,
     output: Literal["inline", "file"] = "inline",
     use_cache: bool = True,
     from_date: Optional[str] = None,
@@ -128,7 +170,7 @@ def fmp_fetch(
         symbol: Stock symbol (e.g., "AAPL", "MSFT"). Required for most endpoints.
         period: Reporting period for financial statements ("annual" or "quarter").
         limit: Maximum number of records to return.
-        columns: Optional list of column names to keep in output.
+        columns: Optional columns filter as JSON array or comma-separated string.
         output: Output mode: inline records or CSV file path.
         use_cache: Whether to use cached data (default: True). Set False for fresh data.
         from_date: Start date for price/rate data (YYYY-MM-DD format).
@@ -167,12 +209,14 @@ def fmp_fetch(
     if type:
         kwargs["type"] = type
 
+    parsed_columns = parse_list(columns)
+
     return _fmp_fetch(
         endpoint=endpoint,
         symbol=symbol,
         period=period,
         limit=limit,
-        columns=columns,
+        columns=parsed_columns,
         output=output,
         use_cache=use_cache,
         **kwargs,
@@ -409,7 +453,7 @@ def get_estimate_revisions(
 
 @mcp.tool()
 def screen_estimate_revisions(
-    tickers: Optional[list[str]] = None,
+    tickers: Optional[str] = None,
     days: int = 30,
     direction: Literal["up", "down", "all"] = "all",
     period: Literal["quarter", "annual"] = "quarter",
@@ -422,7 +466,8 @@ def screen_estimate_revisions(
     full stored universe.
 
     Args:
-        tickers: Optional ticker list to screen. Example: ["AAPL", "MSFT"].
+        tickers: Optional tickers as JSON array or comma-separated string.
+            Example: '["AAPL","MSFT"]' or "AAPL,MSFT".
         days: Lookback window for baseline comparison (default: 30).
         direction: Filter direction:
             - "up": Positive estimate revisions only
@@ -440,8 +485,9 @@ def screen_estimate_revisions(
             "status": "error",
             "error": "Estimate tools unavailable: install optional dependency with fmp-mcp[estimates].",
         }
+    parsed_tickers = parse_list(tickers)
     return _screen_estimate_revisions(
-        tickers=tickers,
+        tickers=parsed_tickers,
         days=days,
         direction=direction,
         period=period,
@@ -515,7 +561,7 @@ def get_economic_data(
 def get_sector_overview(
     date: Optional[str] = None,
     sector: Optional[str] = None,
-    symbols: Optional[list[str]] = None,
+    symbols: Optional[str] = None,
     level: Literal["sector", "industry"] = "sector",
     format: Literal["full", "summary"] = "summary",
     use_cache: bool = True,
@@ -531,8 +577,9 @@ def get_sector_overview(
         date: Snapshot date in YYYY-MM-DD format (optional, defaults to latest).
         sector: Filter to one sector or industry (e.g., "Technology", "Energy",
             "Healthcare"). If not provided, returns all sectors/industries.
-        symbols: Optional list of stock symbols for per-stock P/E comparison mode.
-            Example: ["AAPL", "MSFT", "NVDA"]. Cannot be combined with `sector`.
+        symbols: Optional symbols as JSON array or comma-separated string for
+            per-stock P/E comparison mode. Example: '["AAPL","MSFT","NVDA"]'
+            or "AAPL,MSFT,NVDA". Cannot be combined with `sector`.
         level: Granularity level:
             - "sector": GICS sector level (default, ~11 sectors)
             - "industry": More granular industry level
@@ -550,13 +597,14 @@ def get_sector_overview(
         "Which sectors are cheapest?" -> get_sector_overview()
         "Industry-level breakdown" -> get_sector_overview(level="industry")
         "Energy sector performance" -> get_sector_overview(sector="Energy")
-        "Compare AAPL and MSFT vs sector P/E" -> get_sector_overview(symbols=["AAPL", "MSFT"])
-        "Compare at industry level" -> get_sector_overview(symbols=["AAPL", "XOM"], level="industry")
+        "Compare AAPL and MSFT vs sector P/E" -> get_sector_overview(symbols="AAPL,MSFT")
+        "Compare at industry level" -> get_sector_overview(symbols="AAPL,XOM", level="industry")
     """
+    parsed_symbols = parse_list(symbols)
     return _get_sector_overview(
         date=date,
         sector=sector,
-        symbols=symbols,
+        symbols=parsed_symbols,
         level=level,
         format=format,
         use_cache=use_cache,
@@ -565,7 +613,7 @@ def get_sector_overview(
 
 @mcp.tool()
 def get_market_context(
-    include: Optional[list[str]] = None,
+    include: Optional[str] = None,
     format: Literal["full", "summary"] = "summary",
     use_cache: bool = True,
 ) -> dict:
@@ -577,7 +625,8 @@ def get_market_context(
     upcoming high-impact economic events.
 
     Args:
-        include: Optional section filter. Available sections:
+        include: Optional section filter as JSON array or comma-separated string.
+            Available sections:
             - "indices": S&P 500, Dow Jones, Nasdaq, Russell 2000
             - "sectors": Sector performance heatmap
             - "gainers": Top daily gainers
@@ -596,11 +645,12 @@ def get_market_context(
 
     Examples:
         "What's happening in the market?" -> get_market_context()
-        "Show indices and gainers only" -> get_market_context(include=["indices", "gainers"])
+        "Show indices and gainers only" -> get_market_context(include="indices,gainers")
         "Full market context" -> get_market_context(format="full")
     """
+    parsed_include = parse_list(include)
     return _get_market_context(
-        include=include,
+        include=parsed_include,
         format=format,
         use_cache=use_cache,
     )
@@ -678,7 +728,7 @@ def get_insider_trades(
 @mcp.tool()
 def get_etf_holdings(
     symbol: str,
-    include: Optional[list[str]] = None,
+    include: Optional[str] = None,
     limit: int = 25,
     format: Literal["full", "summary"] = "summary",
     output: Literal["inline", "file"] = "inline",
@@ -689,7 +739,8 @@ def get_etf_holdings(
 
     Args:
         symbol: ETF symbol (e.g., "SPY", "QQQ", "VTI").
-        include: Optional section subset. Valid sections:
+        include: Optional section subset as JSON array or comma-separated string.
+            Valid sections:
             "holdings", "sectors", "countries", "info", "exposure", "disclosure".
             Default: all sections.
         limit: Max rows in summary mode for holdings/exposure/disclosure (default: 25).
@@ -702,9 +753,10 @@ def get_etf_holdings(
     Returns:
         ETF holdings/allocation data with status field ("success" or "error").
     """
+    parsed_include = parse_list(include)
     return _get_etf_holdings(
         symbol=symbol,
-        include=include,
+        include=parsed_include,
         limit=limit,
         format=format,
         output=output,
@@ -868,7 +920,7 @@ def compare_peers(
 def get_technical_analysis(
     symbol: str,
     timeframe: Literal["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"] = "1day",
-    indicators: Optional[list[str]] = None,
+    indicators: Optional[str] = None,
     period_overrides: Optional[dict] = None,
     format: Literal["full", "summary"] = "summary",
     output: Literal["inline", "file"] = "inline",
@@ -888,7 +940,8 @@ def get_technical_analysis(
             - "1day": Daily (default, most common)
             - "1hour", "4hour": Intraday swing
             - "1min", "5min", "15min", "30min": Intraday scalping
-        indicators: Optional subset of indicators to include. Options:
+        indicators: Optional indicator subset as JSON array or comma-separated
+            string. Options:
             "sma", "ema", "rsi", "adx", "williams", "macd", "bollinger".
             Default: all indicators.
         period_overrides: Override default period lengths. Example:
@@ -906,14 +959,15 @@ def get_technical_analysis(
     Examples:
         "Technical analysis for AAPL" -> get_technical_analysis(symbol="AAPL")
         "Is TSLA overbought?" -> get_technical_analysis(symbol="TSLA")
-        "Show me MACD for NVDA" -> get_technical_analysis(symbol="NVDA", indicators=["macd"])
+        "Show me MACD for NVDA" -> get_technical_analysis(symbol="NVDA", indicators="macd")
         "Hourly technicals for SPY" -> get_technical_analysis(symbol="SPY", timeframe="1hour")
         "Full technical data for MSFT" -> get_technical_analysis(symbol="MSFT", format="full")
     """
+    parsed_indicators = parse_list(indicators)
     return _get_technical_analysis(
         symbol=symbol,
         timeframe=timeframe,
-        indicators=indicators,
+        indicators=parsed_indicators,
         period_overrides=period_overrides,
         format=format,
         output=output,

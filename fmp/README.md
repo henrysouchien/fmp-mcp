@@ -4,7 +4,7 @@ A unified interface for Financial Modeling Prep (FMP) API data access with:
 - **Discoverable endpoints** with full metadata
 - **Disk caching** (Parquet + Zstandard compression)
 - **Structured error handling**
-- **MCP server** with 19 tools for AI agent access
+- **Backward-compatible wrappers**
 
 ## Documentation
 
@@ -13,7 +13,7 @@ A unified interface for Financial Modeling Prep (FMP) API data access with:
 | `README.md` | This file - full documentation |
 | `AGENT_PROMPTING_GUIDE.md` | Quick reference for prompting Claude agents |
 | `API_REFERENCE.json` | Machine-readable schema with all endpoints, parameters, and response columns |
-| `server.py` | MCP server entry point (`fmp-mcp` CLI) |
+| `../fmp_mcp_server.py` | MCP server for direct Claude tool access (no scripts needed) |
 
 ## Quick Start
 
@@ -152,6 +152,17 @@ Bypass cache with:
 df = fmp.fetch("income_statement", symbol="AAPL", use_cache=False)
 ```
 
+## Rate Limiting
+
+`FMPClient` includes a built-in sliding-window rate limiter (default: 700 calls/min, 50-call buffer under the 750/min plan limit). All API calls go through `_make_request()` which enforces this automatically — no manual `time.sleep()` needed.
+
+If a 429 (rate limited) response is received despite the proactive limiter (e.g., due to cross-process API key contention), the client retries up to 3 times with 30-second backoff before raising `FMPRateLimitError`.
+
+```python
+# Custom rate limit (e.g., for shared API keys)
+fmp = FMPClient(max_calls_per_minute=500)
+```
+
 ## Error Handling
 
 ```python
@@ -203,7 +214,7 @@ register_endpoint(FMPEndpoint(
 
 Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 
-**Note:** The MCP server (`fmp-mcp` CLI) exposes these tools for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible:
+**Note:** The FMP MCP server (`fmp_mcp_server.py`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server exposes 20 tools:
 
 | MCP Tool | Description |
 |----------|-------------|
@@ -239,7 +250,7 @@ This section documents how to effectively prompt Claude agents to use the FMP pa
 ## Basic Prompt Template
 
 ```
-Use the FMP package to [describe analysis task].
+Use the FMP package at `fmp/` to [describe analysis task].
 
 ```python
 from fmp import FMPClient
@@ -271,7 +282,7 @@ Write and execute a Python script.
 ### Price Analysis
 
 ```
-Use the FMP package to analyze price performance.
+Use the FMP package at `fmp/` to analyze price performance.
 
 ```python
 from fmp import FMPClient
@@ -293,7 +304,7 @@ Write and execute a Python script. The endpoint returns columns like
 ### Fundamental Analysis
 
 ```
-Use the FMP package to analyze free cash flow generation.
+Use the FMP package at `fmp/` to analyze free cash flow generation.
 
 ```python
 from fmp import FMPClient
@@ -315,7 +326,7 @@ Write and execute a Python script.
 ### Treasury/Rates Analysis
 
 ```
-Use the FMP package to analyze Treasury yield curve changes.
+Use the FMP package at `fmp/` to analyze Treasury yield curve changes.
 
 ```python
 from fmp import FMPClient
@@ -339,7 +350,7 @@ Write and execute a Python script.
 ### Company Search
 
 ```
-Use the FMP package to search for companies.
+Use the FMP package at `fmp/` to search for companies.
 
 ```python
 from fmp import FMPClient
@@ -359,7 +370,7 @@ Write and execute a Python script.
 ### Dividend Analysis
 
 ```
-Use the FMP package to analyze dividend history.
+Use the FMP package at `fmp/` to analyze dividend history.
 
 ```python
 from fmp import FMPClient
@@ -380,7 +391,7 @@ Write and execute a Python script.
 ### Analyst Expectations
 
 ```
-Use the FMP package to analyze analyst expectations.
+Use the FMP package at `fmp/` to analyze analyst expectations.
 
 ```python
 from fmp import FMPClient
@@ -403,7 +414,7 @@ Write and execute a Python script.
 ### SEC Filings Research
 
 ```
-Use the FMP package to research a company's SEC filings.
+Use the FMP package at `fmp/` to research a company's SEC filings.
 
 ```python
 from fmp import FMPClient
@@ -435,7 +446,7 @@ Write and execute a Python script.
 ### Earnings Call Analysis
 
 ```
-Use the FMP package to analyze a company's earnings call.
+Use the FMP package at `fmp/` to analyze a company's earnings call.
 
 ```python
 from fmp import FMPClient
@@ -552,21 +563,26 @@ python3 fmp/scripts/snapshot_estimates.py --database-url postgresql://postgres@l
 
 ### Storage
 
-- **Database:** `fmp_data_db` on Postgres (`snapshot_runs` + `estimate_snapshots`)
+- **Database:** `fmp_data_db` on Postgres (`snapshot_runs` + `estimate_snapshots` + `collection_failures`)
 - **Connection:** `FMP_DATA_DATABASE_URL` (default: `postgresql://postgres@localhost:5432/fmp_data_db`)
-- **Growth:** ~78K rows/run × 12 runs/year = ~940K rows/year, ~200-300MB/year of storage
+- **Growth:** ~60K rows/run × 12 runs/year = ~720K rows/year, ~200-300MB/year of storage
 - **Design:** Insert-only, immutable snapshots. UNIQUE constraint on `(ticker, fiscal_date, period, snapshot_date)` prevents duplicates.
+- **Failure tracking:** `collection_failures` table records per-ticker errors with structured error types (`no_income_statement`, `no_estimates`, `api_error`, `unknown`). Query with `store.get_failure_summary(min_runs=2)` to find persistently failing tickers.
 
 ### Resource Profile
 
+Based on first full production run (Feb 2026):
+
 | Metric | Value |
 |---|---|
-| Universe size (bulk intersection) | ~4,900 tickers |
-| API calls per run | ~14,700 (3 per ticker: income_statement + 2 estimate periods) |
+| Universe size (bulk intersection) | ~4,927 tickers |
+| Tickers with data | 4,880 (99.0%) |
+| API calls per run | ~14,800 (3 per ticker: income_statement + 2 estimate periods) |
 | FMP bandwidth per run | Negligible (small JSON responses) |
-| Run duration | ~25 min at 100ms delay (~600 calls/min, under 750/min plan limit) |
-| Rows inserted per run | ~78K (varies by forward period count) |
-| Storage per run | ~20-25MB |
+| Run duration | ~44 min (rate limiter at 700 calls/min) |
+| Rows inserted per run | ~59,500 |
+| Failures per run | ~6 no_income_statement, ~136 no_estimates (no forward periods) |
+| Storage per run | ~15-20MB |
 | Storage per year (12 runs) | ~200-300MB |
 | Postgres capacity | Easily handles 5+ years of history (millions of rows) |
 

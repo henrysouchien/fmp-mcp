@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +49,18 @@ def _is_expired(path: Path, ttl_hours: int | None) -> bool:
         return False
     age_hours = (time.time() - path.stat().st_mtime) / 3600
     return age_hours > ttl_hours
+
+
+def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
+    """Write parquet atomically via temporary file + replace."""
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        df.to_parquet(tmp_path, engine="pyarrow", compression="zstd", index=True)
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 class FMPCache:
@@ -109,7 +122,7 @@ class FMPCache:
         # Cache miss - compute and store
         df = loader()
         if not df.empty:
-            df.to_parquet(path, engine="pyarrow", compression="zstd", index=True)
+            _atomic_write_parquet(df, path)
         return df
 
     def write(
@@ -122,7 +135,7 @@ class FMPCache:
     ) -> Path:
         """Force-write a DataFrame to cache."""
         path = self._get_cache_path(cache_dir, key, prefix)
-        df.to_parquet(path, engine="pyarrow", compression="zstd", index=True)
+        _atomic_write_parquet(df, path)
         return path
 
     def invalidate(

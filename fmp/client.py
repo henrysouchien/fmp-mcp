@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import threading
 import time
 from collections import deque
 from functools import lru_cache
@@ -80,24 +81,28 @@ class _RateLimiter:
             raise ValueError("max_calls_per_minute must be positive")
         self._max = max_calls_per_minute
         self._timestamps: deque[float] = deque()
+        self._lock = threading.Lock()
 
     def acquire(self) -> None:
         """Block until a request slot is available."""
-        now = time.monotonic()
-        while self._timestamps and self._timestamps[0] <= now - 60:
-            self._timestamps.popleft()
+        while True:
+            sleep_for = 0.0
+            with self._lock:
+                now = time.monotonic()
+                while self._timestamps and self._timestamps[0] <= now - 60:
+                    self._timestamps.popleft()
 
-        if len(self._timestamps) >= self._max:
-            sleep_until = self._timestamps[0] + 60
-            sleep_for = sleep_until - now
+                if len(self._timestamps) < self._max:
+                    self._timestamps.append(now)
+                    return
+
+                sleep_until = self._timestamps[0] + 60
+                sleep_for = sleep_until - now
+
             if sleep_for > 0:
                 time.sleep(sleep_for)
-
-            now = time.monotonic()
-            while self._timestamps and self._timestamps[0] <= now - 60:
-                self._timestamps.popleft()
-
-        self._timestamps.append(time.monotonic())
+            else:
+                time.sleep(0.001)
 
 
 class FMPClient:

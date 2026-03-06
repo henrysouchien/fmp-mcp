@@ -899,6 +899,28 @@ register_endpoint(
 
 register_endpoint(
     FMPEndpoint(
+        name="quote",
+        path="/quote/{symbol}",
+        description="Real-time stock quote (price, change, market cap, volume, EPS)",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#stock-quote-short",
+        category="quotes",
+        api_version="v3",
+        params=[
+            EndpointParam(
+                "symbol",
+                ParamType.STRING,
+                required=True,
+                description="Stock symbol or comma-separated symbols",
+            ),
+        ],
+        cache_dir="cache/quotes",
+        cache_enabled=False,  # Near-real-time data should bypass disk cache
+        response_type="list",
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
         name="batch_index_quotes",
         path="/batch-index-quotes",
         description="Batch quotes for market indices",

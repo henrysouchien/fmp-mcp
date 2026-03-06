@@ -1,4 +1,16 @@
-"""Postgres store for tracking analyst estimate revisions over time."""
+"""Postgres store for tracking analyst estimate revisions over time.
+
+LOCAL FALLBACK ONLY. The primary path now uses the hosted API on EC2:
+  MCP tools (fmp/tools/estimates.py) → HTTP → edgar_updater API → RDS Postgres
+
+This file is only used when ESTIMATE_API_URL is not set (local development with
+local Postgres). A copy of this file also lives in the edgar_updater repo
+(edgar_updater/estimates/store.py) where it serves as the server-side store
+behind the API routes.
+
+Can be removed once the local fallback is no longer needed (Step 9 of
+docs/planning/completed/EARNINGS_ESTIMATE_AWS_MIGRATION_PLAN.md).
+"""
 
 from __future__ import annotations
 
@@ -749,6 +761,45 @@ class EstimateStore:
             rows = cur.fetchall()
 
         return [self._format_run_row(row) for row in rows]
+
+    def get_skip_set(
+        self,
+        min_runs: int = 2,
+        error_types: tuple[str, ...] = ("no_estimates", "no_income_statement"),
+        max_age_days: int = 180,
+    ) -> set[str]:
+        """Return tickers with persistent non-transient failures across runs."""
+        if min_runs < 1:
+            raise ValueError("min_runs must be at least 1")
+        if max_age_days < 1:
+            raise ValueError("max_age_days must be at least 1")
+
+        clean_error_types = tuple(self._clean_error_type(error_type) for error_type in error_types)
+        if not clean_error_types:
+            return set()
+
+        if not self._ensure_available():
+            return set()
+        assert self.conn is not None
+
+        cutoff = _utc_now() - timedelta(days=max_age_days)
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ticker
+                FROM collection_failures
+                WHERE error_type = ANY(%s)
+                  AND created_at >= %s
+                GROUP BY ticker
+                HAVING COUNT(DISTINCT run_id) >= %s
+                ORDER BY ticker
+                """,
+                (list(clean_error_types), cutoff, min_runs),
+            )
+            rows = cur.fetchall()
+
+        return {str(row["ticker"]) for row in rows if row.get("ticker")}
 
     def list_tickers(self) -> list[str]:
         """List all tickers with at least one snapshot."""
