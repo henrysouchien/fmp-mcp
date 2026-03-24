@@ -32,16 +32,8 @@ import pandas as pd
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
-
-
-def _last_trading_day() -> str:
-    """Return the most recent weekday as YYYY-MM-DD (skips weekends)."""
-    d = date.today()
-    # Walk back: if today is a weekday use yesterday, else find Friday
-    d -= timedelta(days=1)
-    while d.weekday() >= 5:  # 5=Saturday, 6=Sunday
-        d -= timedelta(days=1)
-    return d.isoformat()
+from ._helpers import _last_trading_day
+from utils.fmp_helpers import compute_forward_pe, first_dataframe_record, parse_fmp_float
 
 
 # Valid indicator names accepted by the FMP economic-indicators endpoint
@@ -342,18 +334,6 @@ def _fetch_indicator(
         from_date, to_date, default_lookback_days=730, default_forward_days=0
     )
 
-    client = FMPClient()
-    df = client.fetch(
-        "economic_indicators",
-        use_cache=use_cache,
-        name=indicator_name,
-        from_date=from_date,
-        to_date=to_date,
-    )
-
-    records = df.to_dict("records") if not df.empty else []
-    columns = list(df.columns) if not df.empty else []
-
     if limit is not None:
         try:
             limit = int(limit)
@@ -367,6 +347,20 @@ def _fetch_indicator(
                 "status": "error",
                 "error": "limit must be a positive integer.",
             }
+
+    client = FMPClient()
+    df = client.fetch(
+        "economic_indicators",
+        use_cache=use_cache,
+        name=indicator_name,
+        from_date=from_date,
+        to_date=to_date,
+    )
+
+    records = df.to_dict("records") if not df.empty else []
+    columns = list(df.columns) if not df.empty else []
+
+    if limit is not None:
         records = _slice_most_recent(records, limit)
 
     if format == "full":
@@ -761,7 +755,10 @@ def _fetch_symbol_pe_comparison(
                 continue
             benchmark_lookup[name.lower()] = (name, round(pe_float, 2))
 
-    symbol_results: dict[str, tuple[dict | None, dict | None]] = {}
+    symbol_results: dict[
+        str,
+        tuple[dict | None, dict | None, list[dict] | None, dict | None],
+    ] = {}
     failed_symbols_set: set[str] = set()
 
     with ThreadPoolExecutor(max_workers=min(len(normalized_symbols), 5)) as executor:
@@ -772,7 +769,7 @@ def _fetch_symbol_pe_comparison(
         for future in as_completed(futures):
             requested_symbol = futures[future]
             try:
-                symbol, profile, ratios, error = future.result()
+                symbol, profile, ratios, estimates, income_statement, error = future.result()
             except Exception:
                 failed_symbols_set.add(requested_symbol)
                 continue
@@ -780,7 +777,7 @@ def _fetch_symbol_pe_comparison(
             if error:
                 failed_symbols_set.add(symbol)
             else:
-                symbol_results[symbol] = (profile, ratios)
+                symbol_results[symbol] = (profile, ratios, estimates, income_statement)
 
     failed_symbols = [s for s in normalized_symbols if s in failed_symbols_set]
     if len(failed_symbols) == len(normalized_symbols):
@@ -795,9 +792,14 @@ def _fetch_symbol_pe_comparison(
         if symbol in failed_symbols_set:
             continue
 
-        profile, ratios = symbol_results.get(symbol, (None, None))
+        profile, ratios, estimates, income_statement = symbol_results.get(
+            symbol,
+            (None, None, None, None),
+        )
         profile = profile or {}
         ratios = ratios or {}
+        estimates = estimates or []
+        income_statement = income_statement or {}
 
         company_name = profile.get("companyName")
         sector_name = str(profile.get("sector") or "").strip() or None
@@ -810,18 +812,48 @@ def _fetch_symbol_pe_comparison(
         benchmark_pe = benchmark_match[1] if benchmark_match else None
         benchmark_name = benchmark_match[0] if benchmark_match else None
 
+        last_reported_fiscal_date = (
+            str(income_statement.get("date"))[:10]
+            if income_statement.get("date")
+            else None
+        )
+        forward_pe_result = compute_forward_pe(
+            parse_fmp_float(profile.get("price")),
+            estimates,
+            last_reported_fiscal_date,
+        )
+
         stock_pe_raw = ratios.get("priceToEarningsRatioTTM")
-        stock_pe: float | None = None
+        fallback_ttm_pe: float | None = None
         if stock_pe_raw is not None:
             try:
                 stock_pe_float = float(stock_pe_raw)
                 if math.isfinite(stock_pe_float) and stock_pe_float > 0:
-                    stock_pe = round(stock_pe_float, 2)
+                    fallback_ttm_pe = round(stock_pe_float, 2)
             except (TypeError, ValueError):
-                stock_pe = None
+                fallback_ttm_pe = None
+
+        stock_pe = forward_pe_result.get("forward_pe")
+        if stock_pe is None:
+            stock_pe = fallback_ttm_pe
+
+        pe_source = (
+            "forward"
+            if forward_pe_result.get("forward_pe") is not None
+            else "ttm"
+            if fallback_ttm_pe is not None
+            else forward_pe_result.get("pe_source")
+        )
 
         premium_pct = _compute_pe_premium(stock_pe, benchmark_pe)
-        verdict = _classify_verdict(stock_pe, benchmark_pe, premium_pct, stock_pe_raw)
+        verdict = _classify_verdict(
+            stock_pe,
+            benchmark_pe,
+            premium_pct,
+            forward_pe_result.get("forward_pe")
+            if forward_pe_result.get("forward_pe") is not None
+            else stock_pe_raw,
+        )
 
         comparison = {
             "symbol": symbol,
@@ -829,7 +861,9 @@ def _fetch_symbol_pe_comparison(
             "sector": sector_name,
             "industry": industry_name,
             "stock_pe": stock_pe,
+            "pe_source": pe_source,
             "benchmark_pe": benchmark_pe,
+            "benchmark_pe_source": "ttm",
             "benchmark_name": benchmark_name,
             "premium_pct": premium_pct,
             "verdict": verdict,
@@ -891,17 +925,46 @@ def _fetch_symbol_data(
     client: FMPClient,
     symbol: str,
     use_cache: bool,
-) -> tuple[str, dict | None, dict | None, str | None]:
-    """Fetch profile and ratios_ttm for a symbol using cached client.fetch()."""
+) -> tuple[str, dict | None, dict | None, list[dict] | None, dict | None, str | None]:
+    """Fetch profile, ratios, and best-effort estimate context for a symbol."""
     try:
         profile_df = client.fetch("profile", symbol=symbol, use_cache=use_cache)
         ratios_df = client.fetch("ratios_ttm", symbol=symbol, use_cache=use_cache)
     except Exception as e:
-        return (symbol, None, None, str(e))
+        return (symbol, None, None, None, None, str(e))
 
-    profile = profile_df.iloc[0].to_dict() if not profile_df.empty else None
-    ratios = ratios_df.iloc[0].to_dict() if not ratios_df.empty else None
-    return (symbol, profile, ratios, None)
+    estimates: list[dict] | None = None
+    try:
+        estimates_df = client.fetch(
+            "analyst_estimates",
+            symbol=symbol,
+            period="annual",
+            limit=4,
+            use_cache=use_cache,
+        )
+        if estimates_df is not None and hasattr(estimates_df, "empty") and not estimates_df.empty:
+            estimates = estimates_df.to_dict("records")
+        else:
+            estimates = []
+    except Exception:
+        estimates = None
+
+    income_statement: dict | None = None
+    try:
+        income_statement_df = client.fetch(
+            "income_statement",
+            symbol=symbol,
+            period="quarter",
+            limit=1,
+            use_cache=use_cache,
+        )
+        income_statement = first_dataframe_record(income_statement_df) or None
+    except Exception:
+        income_statement = None
+
+    profile = first_dataframe_record(profile_df) or None
+    ratios = first_dataframe_record(ratios_df) or None
+    return (symbol, profile, ratios, estimates, income_statement, None)
 
 
 def _compute_pe_premium(stock_pe, benchmark_pe):

@@ -265,6 +265,17 @@ class FMPClient:
 
         # Log successful request
         self._log_success(endpoint.name, response_time)
+        try:
+            from app_platform.logging.core import log_timing_event
+
+            log_timing_event(
+                kind="dependency",
+                name=f"fmp:{endpoint.name}",
+                duration_ms=response_time * 1000,
+                status=resp.status_code,
+            )
+        except Exception:
+            pass
 
         if endpoint.response_type == "csv":
             text_payload = resp.text or ""

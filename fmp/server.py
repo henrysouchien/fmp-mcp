@@ -6,7 +6,7 @@ MCP (Model Context Protocol) server for FMP (Financial Modeling Prep) API.
 Exposes financial data tools for AI assistant invocation.
 
 Setup:
-    pip install fmp-mcp
+    cd ./risk_module
     claude mcp add fmp-mcp -- fmp-mcp
 
 Usage:
@@ -37,6 +37,7 @@ from fmp.tools.fmp_core import (
 )
 from fmp.tools.screening import screen_stocks as _screen_stocks
 from fmp.tools.peers import compare_peers as _compare_peers
+from fmp.tools.stock_fundamentals import get_stock_fundamentals as _get_stock_fundamentals
 from fmp.tools.market import get_economic_data as _get_economic_data
 from fmp.tools.market import get_sector_overview as _get_sector_overview
 from fmp.tools.market import get_market_context as _get_market_context
@@ -75,6 +76,7 @@ Use these tools to fetch financial data:
 - screen_estimate_revisions: Screen tickers for up/down estimate momentum
 - screen_stocks: Screen stocks by fundamental criteria
 - compare_peers: Compare a stock against its peers on financial ratios
+- get_stock_fundamentals: Get enriched stock lookup data (profile, quote, financials, valuation, quality, technicals, optional chart)
 - get_technical_analysis: Get composite technical analysis (trend, momentum, volatility signals)
 - get_economic_data: Get economic indicators and calendar events
 - get_sector_overview: Get sector/industry performance and P/E valuation overview
@@ -94,7 +96,10 @@ for a one-call morning market briefing.""",
 
 
 def parse_list(value: Any, *, coerce=str) -> list | None:
-    """Parse MCP list params that may arrive as JSON or comma-separated strings."""
+    """Parse MCP list params that may arrive as JSON or comma-separated strings.
+
+    NOTE: Duplicated from mcp_tools/common.py. Keep in sync.
+    """
     if value is None:
         return None
     if isinstance(value, list):
@@ -912,6 +917,56 @@ def compare_peers(
         symbol=symbol,
         peers=peers,
         limit=limit,
+        format=format,
+    )
+
+
+@mcp.tool()
+def get_stock_fundamentals(
+    symbol: str,
+    include: Optional[str] = None,
+    format: Literal["full", "summary"] = "summary",
+) -> dict:
+    """
+    Get enriched stock lookup data for a single ticker.
+
+    Combines company profile, real-time quote, valuation metrics, profitability,
+    balance-sheet leverage, quality signals, and technical-analysis summary in
+    one tool call. In `format="full"`, it also includes 2 years of daily chart
+    data.
+
+    Args:
+        symbol: Stock symbol (e.g., "AAPL", "MSFT", "NVDA").
+        include: Optional section subset as JSON array or comma-separated string.
+            Valid sections:
+            - "profile": Company name, sector, industry, exchange
+            - "quote": Price, change, market cap, volume, EPS
+            - "financials": TTM revenue, EBITDA, net income, FCF, operating cash flow, CapEx
+            - "valuation": Forward/TTM P/E, P/B, PEG, EV/EBITDA, dividend yield, sector P/E
+            - "profitability": ROE, ROIC, gross/operating/net margins
+            - "balance_sheet": Debt/equity, current ratio, net debt/EBITDA
+            - "quality": Six quality signals and aggregate score
+            - "technicals": RSI, MACD signal, Bollinger position, support/resistance
+            - "chart": 2-year daily price/volume history (`format="full"` only)
+            Default: all sections supported by the chosen format.
+        format: Output format:
+            - "summary": Compact section outputs
+            - "full": Same sections plus chart data
+
+    Returns:
+        Stock fundamentals response with status field ("success" or "error"),
+        normalized sections, `sections_included`, `sections_failed`, and
+        warnings for any partial failures.
+
+    Examples:
+        "Fundamentals for AAPL" -> get_stock_fundamentals(symbol="AAPL")
+        "Valuation and quality for NVDA" -> get_stock_fundamentals(symbol="NVDA", include="valuation,quality")
+        "Full stock lookup for MSFT" -> get_stock_fundamentals(symbol="MSFT", format="full")
+    """
+    parsed_include = parse_list(include)
+    return _get_stock_fundamentals(
+        symbol=symbol,
+        include=parsed_include,
         format=format,
     )
 

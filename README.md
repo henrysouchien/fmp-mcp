@@ -6,6 +6,8 @@ Give Claude (or any MCP-compatible AI) the ability to analyze stocks, screen mar
 
 This isn't a raw API wrapper. Each tool is purpose-built for a specific analytical task, composing multiple data sources into structured, analysis-ready outputs designed for AI consumption.
 
+Tool surface below was verified against `fmp/server.py` on 2026-03-19. The repo build exposes 19 MCP tools; the two estimate-revision tools require the `estimates` extra plus database access for useful live results.
+
 ## What your AI can do
 
 **Market Intelligence**
@@ -70,7 +72,14 @@ Optional settings:
 fmp-mcp
 ```
 
-Or use with Claude Code:
+Or register it with Claude Code from the repo root:
+
+```bash
+claude mcp add fmp-mcp --scope user \
+  -- python3 -m fmp.server
+```
+
+You can also use a generic MCP config:
 
 ```json
 {
@@ -99,3 +108,8 @@ Or use with Claude Code:
 
 - Python 3.11+
 - FMP API key ([get one here](https://financialmodelingprep.com/developer/docs/))
+
+## Related Docs
+
+- `docs/reference/FMP_ENDPOINTS.md` — registered endpoint catalog
+- `docs/reference/MCP_SERVERS.md` — server registration and troubleshooting

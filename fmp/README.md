@@ -13,7 +13,7 @@ A unified interface for Financial Modeling Prep (FMP) API data access with:
 | `README.md` | This file - full documentation |
 | `AGENT_PROMPTING_GUIDE.md` | Quick reference for prompting Claude agents |
 | `API_REFERENCE.json` | Machine-readable schema with all endpoints, parameters, and response columns |
-| `../fmp_mcp_server.py` | MCP server for direct Claude tool access (no scripts needed) |
+| `server.py` | MCP server for direct Claude tool access (`python3 -m fmp.server`) |
 
 ## Quick Start
 
@@ -214,7 +214,7 @@ register_endpoint(FMPEndpoint(
 
 Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 
-**Note:** The FMP MCP server (`fmp_mcp_server.py`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server exposes 20 tools:
+**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server exposes 20 tools:
 
 | MCP Tool | Description |
 |----------|-------------|

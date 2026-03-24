@@ -7,6 +7,11 @@ Analyzes:
 3. Yield curve shape comparison: start vs end of period
 """
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from fmp import FMPClient
 import pandas as pd

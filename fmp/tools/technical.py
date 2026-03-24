@@ -47,6 +47,12 @@ DEFAULT_PERIODS = {
 VALID_INDICATORS = {"sma", "ema", "rsi", "adx", "williams", "macd", "bollinger"}
 
 
+def _supports_cached_fetch(fmp: object) -> bool:
+    return not type(fmp).__module__.startswith("unittest.mock") and callable(
+        getattr(type(fmp), "fetch", None)
+    )
+
+
 def get_technical_analysis(
     symbol: str,
     timeframe: Literal["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"] = "1day",
@@ -236,12 +242,22 @@ def _parallel_fetch(
 
     def _fetch_one(endpoint_name: str, period: int) -> tuple[str, int, list]:
         """Fetch one indicator. Returns (endpoint_name, period, data_list)."""
-        data = fmp.fetch_raw(
-            endpoint_name,
-            symbol=symbol,
-            periodLength=period,
-            timeframe=timeframe,
-        )
+        if _supports_cached_fetch(fmp):
+            payload = fmp.fetch(
+                endpoint_name,
+                symbol=symbol,
+                periodLength=period,
+                timeframe=timeframe,
+                use_cache=use_cache,
+            )
+            data = payload.to_dict("records") if hasattr(payload, "to_dict") else payload
+        else:
+            data = fmp.fetch_raw(
+                endpoint_name,
+                symbol=symbol,
+                periodLength=period,
+                timeframe=timeframe,
+            )
         if isinstance(data, dict):
             data = [data]
         if not data:

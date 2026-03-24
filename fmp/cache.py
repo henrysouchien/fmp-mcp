@@ -15,14 +15,26 @@ from __future__ import annotations
 
 import hashlib
 import os
-import tempfile
-import time
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pandas as pd
-from pandas.errors import EmptyDataError, ParserError
+from utils.timeseries_store import (
+    TimeSeriesStore,
+    _MISSING_COVERAGE_MTIME,
+    _atomic_write_parquet,
+    _atomic_write_text,
+    _coerce_date_bound,
+    _coerce_month_end_bound,
+    _date_str,
+    _is_empty_loader_error,
+    _is_expired,
+    _merge_series,
+    _normalize_series,
+    _safe_load,
+)
 
 SERVICE_CACHE_MAXSIZE = int(os.getenv("FMP_CACHE_MAXSIZE", "200"))
 
@@ -31,36 +43,6 @@ def _hash(parts: Iterable[str | int | float | None]) -> str:
     """Generate a short deterministic hash from key parts."""
     key = "_".join(str(p) for p in parts if p is not None)
     return hashlib.md5(key.encode()).hexdigest()[:8]
-
-
-def _safe_load(path: Path) -> pd.DataFrame | None:
-    """Safely load a parquet file, removing corrupted files."""
-    try:
-        return pd.read_parquet(path)
-    except (EmptyDataError, ParserError, OSError, ValueError) as e:
-        print(f"Cache file corrupted, deleting: {path.name} ({type(e).__name__})")
-        path.unlink(missing_ok=True)
-        return None
-
-
-def _is_expired(path: Path, ttl_hours: int | None) -> bool:
-    """Check if a cached file has expired based on TTL."""
-    if ttl_hours is None:
-        return False
-    age_hours = (time.time() - path.stat().st_mtime) / 3600
-    return age_hours > ttl_hours
-
-
-def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
-    """Write parquet atomically via temporary file + replace."""
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        df.to_parquet(tmp_path, engine="pyarrow", compression="zstd", index=True)
-        os.replace(tmp_path, path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
 
 class FMPCache:
@@ -155,6 +137,8 @@ class FMPCache:
 
 # Module-level cache instance (uses project root)
 _cache: FMPCache | None = None
+_timeseries_stores: dict[str, TimeSeriesStore] = {}
+_timeseries_store_guard = threading.Lock()
 
 
 def _default_cache_base() -> Path:
@@ -174,6 +158,32 @@ def get_cache() -> FMPCache:
     if _cache is None:
         _cache = FMPCache(_default_cache_base())
     return _cache
+
+
+def get_timeseries_store(base_dir: str | Path | None = None) -> TimeSeriesStore:
+    """Get or create the per-base-dir time series store singleton."""
+    resolved = Path(base_dir or _default_cache_base()).expanduser().resolve()
+    key = str(resolved)
+    with _timeseries_store_guard:
+        store = _timeseries_stores.get(key)
+        if store is None:
+            store = TimeSeriesStore(resolved)
+            _timeseries_stores[key] = store
+        return store
+
+
+def _clear_all_timeseries_stores(series_kind: str | None = None) -> None:
+    """Clear cached files across all instantiated time series stores."""
+    with _timeseries_store_guard:
+        stores = list(_timeseries_stores.values())
+    for store in stores:
+        store.clear(series_kind=series_kind)
+
+
+def _reset_timeseries_store_registry_for_tests() -> None:
+    """Drop store singletons for test isolation."""
+    with _timeseries_store_guard:
+        _timeseries_stores.clear()
 
 
 # LRU cache utilities (available for future use, not currently wired into FMPClient)

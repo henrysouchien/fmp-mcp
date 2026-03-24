@@ -425,6 +425,40 @@ register_endpoint(
     )
 )
 
+register_endpoint(
+    FMPEndpoint(
+        name="key_metrics_ttm",
+        path="/key-metrics-ttm",
+        description="Trailing twelve month key financial metrics",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs/stable/key-metrics-ttm",
+        category="fundamentals",
+        api_version="stable",
+        params=[
+            EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
+        ],
+        cache_dir="cache/fundamentals",
+        cache_refresh=CacheRefresh.TTL,
+        cache_ttl_hours=6,
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="historical_market_cap",
+        path="/historical-market-capitalization",
+        description="Historical daily market capitalization time series",
+        category="fundamentals",
+        api_version="stable",
+        params=[
+            EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
+            EndpointParam("from", ParamType.DATE, description="Start date (YYYY-MM-DD)"),
+            EndpointParam("to", ParamType.DATE, description="End date (YYYY-MM-DD)"),
+        ],
+        cache_dir="cache/fundamentals",
+        cache_refresh=CacheRefresh.HASH_ONLY,  # Historical market cap data is immutable
+    )
+)
+
 # --- Analyst ---
 # Analyst data changes frequently; use TTL-based caching
 
@@ -627,7 +661,7 @@ register_endpoint(
             EndpointParam("exchange", ParamType.STRING, description="Exchange filter (e.g., NASDAQ)"),
             EndpointParam("isEtf", ParamType.BOOLEAN, description="Filter for ETFs only"),
             EndpointParam("isFund", ParamType.BOOLEAN, description="Filter for funds only"),
-            EndpointParam("isActivelyTrading", ParamType.BOOLEAN, default=True, description="Only actively trading"),
+            EndpointParam("isActivelyTrading", ParamType.BOOLEAN, description="Only actively trading"),
             EndpointParam("limit", ParamType.INTEGER, default=50, description="Max results"),
         ],
         cache_dir="cache/screening",
@@ -723,6 +757,56 @@ register_endpoint(
         cache_dir="cache/news",
         cache_refresh=CacheRefresh.TTL,
         cache_ttl_hours=1,
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="mergers_acquisitions_rss",
+        path="/mergers-acquisitions-rss-feed",
+        description="Latest mergers and acquisitions RSS feed entries",
+        category="news",
+        api_version="v4",
+        params=[
+            EndpointParam("page", ParamType.INTEGER, default=0, description="Page number"),
+        ],
+        cache_dir="cache/news",
+        cache_refresh=CacheRefresh.TTL,
+        cache_ttl_hours=1,
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="press_releases_firehose",
+        path="/press-releases",
+        description="Latest market-wide press releases firehose",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#press-releases",
+        category="news",
+        api_version="v3",
+        params=[
+            EndpointParam("limit", ParamType.INTEGER, default=100, description="Max results"),
+        ],
+        cache_dir="cache/news",
+        cache_refresh=CacheRefresh.TTL,
+        cache_ttl_hours=1,
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="symbol_changes",
+        path="/symbol-change",
+        description="Ticker symbol change feed with pagination",
+        category="news",
+        api_version="stable",
+        params=[
+            EndpointParam("page", ParamType.INTEGER, default=0, description="Page number"),
+            EndpointParam("limit", ParamType.INTEGER, default=100, description="Max results"),
+        ],
+        cache_dir="cache/news",
+        cache_refresh=CacheRefresh.TTL,
+        cache_ttl_hours=6,
     )
 )
 

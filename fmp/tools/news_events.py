@@ -4,11 +4,13 @@ MCP Tools: get_news, get_events_calendar
 Exposes FMP news and event calendar data as MCP tools for AI invocation.
 """
 
+import math
 import sys
 from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from ..client import FMPClient
+from ..exceptions import FMPEmptyResponseError
 
 
 # --- News source quality tiers ---
@@ -56,15 +58,76 @@ _CALENDAR_ENDPOINTS = {
 }
 
 
-def _fetch_calendar(fmp: FMPClient, endpoint_name: str, from_date: str, to_date: str) -> list[dict]:
+def _clean_record(record: dict) -> dict:
+    """Normalize raw records so cached DataFrame paths preserve None semantics."""
+    cleaned = {}
+    for key, value in record.items():
+        if isinstance(value, float) and math.isnan(value):
+            cleaned[key] = None
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+def _records_from_payload(payload: object) -> list[dict]:
+    """Normalize raw/cached endpoint payloads into plain record dictionaries."""
+    if payload is None:
+        return []
+
+    if hasattr(payload, "to_dict"):
+        try:
+            records = payload.to_dict("records")
+        except TypeError:
+            records = payload.to_dict()
+        if isinstance(records, list):
+            return [_clean_record(record) for record in records if isinstance(record, dict)]
+        if isinstance(records, dict):
+            return [_clean_record(records)] if records else []
+
+    if isinstance(payload, list):
+        return [_clean_record(record) for record in payload if isinstance(record, dict)]
+
+    if isinstance(payload, dict):
+        return [_clean_record(payload)] if payload else []
+
+    return []
+
+
+def _fetch_records(
+    fmp: FMPClient,
+    endpoint_name: str,
+    *,
+    use_cache: bool = True,
+    **params,
+) -> list[dict]:
+    """Fetch endpoint records while respecting endpoint-level cache configuration."""
+    try:
+        if use_cache:
+            payload = fmp.fetch(endpoint_name, use_cache=use_cache, **params)
+        else:
+            payload = fmp.fetch_raw(endpoint_name, **params)
+    except FMPEmptyResponseError:
+        return []
+    return _records_from_payload(payload)
+
+
+def _fetch_calendar(
+    fmp: FMPClient,
+    endpoint_name: str,
+    from_date: str,
+    to_date: str,
+    *,
+    use_cache: bool = True,
+) -> list[dict]:
     """Fetch a single calendar endpoint, returning list of events."""
     try:
-        raw = fmp.fetch_raw(endpoint_name, from_date=from_date, to_date=to_date)
-        if isinstance(raw, list):
-            return raw
-        if raw:
-            return [raw]
-        return []
+        return _fetch_records(
+            fmp,
+            endpoint_name,
+            from_date=from_date,
+            to_date=to_date,
+            use_cache=use_cache,
+        )
     except Exception:
         # Individual calendar fetch failure should not break "all" mode
         return []
@@ -106,6 +169,7 @@ def get_news(
     to_date: Optional[str] = None,
     format: Literal["summary", "full"] = "summary",
     quality: Literal["all", "trusted", "wire", "journalism"] = "trusted",
+    use_cache: bool = True,
 ) -> dict:
     """Fetch news articles for stocks or the broad market."""
     _saved = sys.stdout
@@ -132,13 +196,28 @@ def get_news(
             fetch_kwargs["to_date"] = to_date
 
         if mode == "general":
-            raw = fmp.fetch_raw("news_general", **fetch_kwargs)
+            articles = _fetch_records(
+                fmp,
+                "news_general",
+                use_cache=use_cache,
+                **fetch_kwargs,
+            )
         elif mode == "press":
-            raw = fmp.fetch_raw("news_press_releases", symbols=symbols, **fetch_kwargs)
+            articles = _fetch_records(
+                fmp,
+                "news_press_releases",
+                symbols=symbols,
+                use_cache=use_cache,
+                **fetch_kwargs,
+            )
         else:
-            raw = fmp.fetch_raw("news_stock", symbols=symbols, **fetch_kwargs)
-
-        articles = raw if isinstance(raw, list) else [raw] if raw else []
+            articles = _fetch_records(
+                fmp,
+                "news_stock",
+                symbols=symbols,
+                use_cache=use_cache,
+                **fetch_kwargs,
+            )
         articles = _filter_by_quality(articles, quality)
         articles = articles[:limit]
 
@@ -181,6 +260,7 @@ def get_events_calendar(
     symbols: Optional[str] = None,
     limit: Optional[int] = None,
     format: Literal["summary", "full"] = "summary",
+    use_cache: bool = True,
 ) -> dict:
     """Fetch upcoming corporate events: earnings, dividends, splits, or IPOs."""
     _saved = sys.stdout
@@ -227,13 +307,25 @@ def get_events_calendar(
 
         if event_type == "all":
             for etype, endpoint_name in _CALENDAR_ENDPOINTS.items():
-                events = _fetch_calendar(fmp, endpoint_name, from_date, to_date)
+                events = _fetch_calendar(
+                    fmp,
+                    endpoint_name,
+                    from_date,
+                    to_date,
+                    use_cache=use_cache,
+                )
                 for evt in events:
                     evt["_event_type"] = etype
                 all_events.extend(events)
         else:
             endpoint_name = _CALENDAR_ENDPOINTS[event_type]
-            events = _fetch_calendar(fmp, endpoint_name, from_date, to_date)
+            events = _fetch_calendar(
+                fmp,
+                endpoint_name,
+                from_date,
+                to_date,
+                use_cache=use_cache,
+            )
             for evt in events:
                 evt["_event_type"] = event_type
             all_events = events
