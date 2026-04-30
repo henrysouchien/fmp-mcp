@@ -6,7 +6,7 @@ Give Claude (or any MCP-compatible AI) the ability to analyze stocks, screen mar
 
 This isn't a raw API wrapper. Each tool is purpose-built for a specific analytical task, composing multiple data sources into structured, analysis-ready outputs designed for AI consumption.
 
-Tool surface below was verified against `fmp/server.py` on 2026-03-19. The repo build exposes 19 MCP tools; the two estimate-revision tools require the `estimates` extra plus database access for useful live results.
+Tool surface below was verified against `fmp/server.py` on 2026-04-30. The repo build exposes 20 MCP tools; the two estimate-revision tools require the `estimates` extra plus database access for useful live results.
 
 ## What your AI can do
 
@@ -19,6 +19,7 @@ Tool surface below was verified against `fmp/server.py` on 2026-03-19. The repo 
 
 **Fundamental Analysis**
 - `fmp_fetch` — Direct access to 60+ financial data endpoints (income statements, balance sheets, cash flows, key metrics, and more)
+- `fmp_market_cap_check` — Compare current market cap against the latest annual filing value
 - `compare_peers` — Side-by-side peer comparison across 12 financial ratios
 - `get_earnings_transcript` — Parsed earnings calls with speaker attribution and Q&A sections
 
