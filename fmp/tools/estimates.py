@@ -11,29 +11,15 @@ Server-side code lives in the edgar_updater repo:
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import date, datetime, timezone
 from typing import Literal, Optional, Any
 
-import requests as _requests
-
-_ESTIMATE_API_URL = os.getenv("ESTIMATE_API_URL", "https://financialmodelupdater.com")
-_ESTIMATE_API_KEY = os.getenv("EDGAR_API_KEY")
-_MISSING_API_URL_ERROR = (
-    "ESTIMATE_API_URL environment variable is required. "
-    "Set it to the hosted estimates API URL (e.g. https://financialmodelupdater.com)."
+from fmp.estimates_client import (
+    ESTIMATE_API_URL as _ESTIMATE_API_URL,
+    MISSING_API_URL_ERROR as _MISSING_API_URL_ERROR,
+    get as _api_get,
 )
-
-
-def _api_get(path: str, params: dict | None = None) -> list | dict:
-    """Fetch from the hosted estimates API."""
-    params = dict(params or {})
-    if _ESTIMATE_API_KEY:
-        params["key"] = _ESTIMATE_API_KEY
-    resp = _requests.get(f"{_ESTIMATE_API_URL}{path}", params=params, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
 
 
 def _normalize_tickers(tickers: Optional[list[str] | str]) -> list[str]:

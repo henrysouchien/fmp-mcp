@@ -17,7 +17,7 @@ from ..exceptions import FMPEmptyResponseError
 from ..quality_signals import compute_quality_signals
 from ._helpers import _last_trading_day
 from .technical import get_technical_analysis
-from utils.fmp_helpers import (
+from fmp._shared.fmp_helpers import (
     _get_last_reported_fiscal_date,
     compute_forward_ev_ebitda,
     compute_forward_ev_sales,

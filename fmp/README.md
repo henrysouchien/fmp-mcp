@@ -214,7 +214,7 @@ register_endpoint(FMPEndpoint(
 
 Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 
-**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server exposes 20 tools:
+**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server currently exposes 19 tools:
 
 | MCP Tool | Description |
 |----------|-------------|
@@ -224,6 +224,8 @@ Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 | `fmp_list_endpoints` | List available endpoints |
 | `fmp_describe` | Get endpoint parameter documentation |
 | `screen_stocks` | Screen stocks by fundamental criteria |
+| `get_estimate_revisions` | Estimate revision history for a ticker |
+| `screen_estimate_revisions` | Screen for estimate momentum across tickers |
 | `compare_peers` | Compare a stock against its peers on financial ratios |
 | `get_technical_analysis` | Composite technical analysis (trend, momentum, volatility) |
 | `get_economic_data` | Economic indicators and calendar events |
@@ -235,9 +237,6 @@ Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 | `get_news` | News articles (stock-specific, general, press releases) |
 | `get_events_calendar` | Corporate event calendars (earnings, dividends, splits, IPOs) |
 | `get_earnings_transcript` | Parse and navigate earnings call transcripts |
-| `compare_peers` | Side-by-side peer comparison on financial ratios |
-| `get_estimate_revisions` | Estimate revision history for a ticker |
-| `screen_estimate_revisions` | Screen for estimate momentum across tickers |
 
 ---
 

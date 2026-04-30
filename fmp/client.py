@@ -27,6 +27,13 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
+try:
+    from app_platform.api_budget import guard_call
+except ImportError:
+    def guard_call(*, fn, args=(), kwargs=None, **_):
+        """No-op fallback when app_platform.api_budget isn't installed (dist runtime)."""
+        return fn(*args, **(kwargs or {}))
+
 from .cache import FMPCache, get_cache
 from .exceptions import (
     FMPAPIError,
@@ -194,10 +201,30 @@ class FMPClient:
     _RATE_LIMIT_RETRIES = 3
     _RATE_LIMIT_BACKOFF_SECONDS = 30
 
+    def _dispatch_once(
+        self,
+        url: str,
+        request_params: dict[str, Any],
+        *,
+        endpoint_name: str,
+        budget_user_id: int | None = None,
+    ) -> requests.Response:
+        return guard_call(
+            provider="fmp",
+            operation=endpoint_name,
+            budget_user_id=budget_user_id,
+            cost_per_call=0,
+            fn=requests.get,
+            args=(url,),
+            kwargs={"params": request_params, "timeout": self.timeout},
+        )
+
     def _make_request(
         self,
         endpoint: FMPEndpoint,
         params: dict[str, Any],
+        *,
+        budget_user_id: int | None = None,
     ) -> list | dict:
         """Make HTTP request to FMP API with error handling."""
         self._ensure_api_key()
@@ -217,7 +244,12 @@ class FMPClient:
             start_time = time.time()
 
             try:
-                resp = requests.get(url, params=request_params, timeout=self.timeout)
+                resp = self._dispatch_once(
+                    url,
+                    request_params,
+                    endpoint_name=endpoint.name,
+                    budget_user_id=budget_user_id,
+                )
             except requests.exceptions.Timeout:
                 self._log_error(endpoint.name, "Request timeout")
                 raise FMPAPIError(
@@ -375,6 +407,7 @@ class FMPClient:
         endpoint_name: str,
         *,
         use_cache: bool = True,
+        budget_user_id: int | None = None,
         **params: Any,
     ) -> pd.DataFrame:
         """
@@ -416,7 +449,11 @@ class FMPClient:
         prefix = validated_params.get("symbol", endpoint_name)
 
         def _loader() -> pd.DataFrame:
-            data = self._make_request(endpoint, validated_params)
+            data = self._make_request(
+                endpoint,
+                validated_params,
+                budget_user_id=budget_user_id,
+            )
 
             # Handle different response types
             if isinstance(data, dict):
@@ -472,6 +509,8 @@ class FMPClient:
     def fetch_raw(
         self,
         endpoint_name: str,
+        *,
+        budget_user_id: int | None = None,
         **params: Any,
     ) -> list | dict:
         """
@@ -489,7 +528,11 @@ class FMPClient:
             raise FMPEndpointError(endpoint_name)
 
         validated_params = endpoint.build_params(**params)
-        return self._make_request(endpoint, validated_params)
+        return self._make_request(
+            endpoint,
+            validated_params,
+            budget_user_id=budget_user_id,
+        )
 
     def list_endpoints(self, category: str | None = None) -> list[dict[str, str]]:
         """

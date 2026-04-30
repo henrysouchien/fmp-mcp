@@ -33,7 +33,7 @@ from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
 from ._helpers import _last_trading_day
-from utils.fmp_helpers import compute_forward_pe, first_dataframe_record, parse_fmp_float
+from fmp._shared.fmp_helpers import compute_forward_pe, first_dataframe_record, parse_fmp_float
 
 
 # Valid indicator names accepted by the FMP economic-indicators endpoint
@@ -451,6 +451,11 @@ def _fetch_calendar(
     )
 
     records = df.to_dict("records") if not df.empty else []
+    # Scrub NaN/NaT values from pandas serialization.
+    for rec in records:
+        for key, val in rec.items():
+            if val is not None and pd.isna(val):
+                rec[key] = None
     if country:
         country_upper = str(country).upper()
         records = [
@@ -1102,7 +1107,12 @@ def _safe_fetch_records(
     try:
         df = client.fetch(endpoint_name, use_cache=use_cache, **params)
         if df is not None and not df.empty:
-            return {"ok": True, "data": df.to_dict("records"), "error": None}
+            records = df.to_dict("records")
+            for rec in records:
+                for key, val in rec.items():
+                    if val is not None and pd.isna(val):
+                        rec[key] = None
+            return {"ok": True, "data": records, "error": None}
         return {"ok": True, "data": [], "error": None}
     except FMPEmptyResponseError:
         return {"ok": True, "data": [], "error": None}

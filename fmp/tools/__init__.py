@@ -2,7 +2,14 @@
 
 from .estimates import get_estimate_revisions, screen_estimate_revisions
 from .etf_funds import get_etf_holdings
-from .fmp_core import fmp_describe, fmp_fetch, fmp_list_endpoints, fmp_profile, fmp_search
+from .fmp_core import (
+    fmp_describe,
+    fmp_fetch,
+    fmp_list_endpoints,
+    fmp_market_cap_check,
+    fmp_profile,
+    fmp_search,
+)
 from .insider import get_insider_trades
 from .institutional import get_institutional_ownership
 from .market import get_economic_data, get_market_context, get_sector_overview
@@ -16,6 +23,7 @@ __all__ = [
     "fmp_fetch",
     "fmp_search",
     "fmp_profile",
+    "fmp_market_cap_check",
     "fmp_list_endpoints",
     "fmp_describe",
     "screen_stocks",

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pandas as pd
-from utils.timeseries_store import (
+from fmp._shared.timeseries_store import (
     TimeSeriesStore,
     _MISSING_COVERAGE_MTIME,
     _atomic_write_parquet,

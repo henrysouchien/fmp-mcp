@@ -32,6 +32,7 @@ from fmp.tools.fmp_core import (
     fmp_describe as _fmp_describe,
     fmp_fetch as _fmp_fetch,
     fmp_list_endpoints as _fmp_list_endpoints,
+    fmp_market_cap_check as _fmp_market_cap_check,
     fmp_profile as _fmp_profile,
     fmp_search as _fmp_search,
 )
@@ -72,6 +73,7 @@ Use these tools to fetch financial data:
 - fmp_fetch: Fetch data from any endpoint
 - fmp_search: Search for companies by name
 - fmp_profile: Get company profile details
+- fmp_market_cap_check: Compare current vs latest annual market cap
 - get_estimate_revisions: Get historical estimate revisions for one ticker/fiscal period
 - screen_estimate_revisions: Screen tickers for up/down estimate momentum
 - screen_stocks: Screen stocks by fundamental criteria
@@ -162,10 +164,12 @@ def fmp_fetch(
 
     Args:
         endpoint: Name of the FMP endpoint. Common endpoints:
-            - income_statement: Income statement data
-            - balance_sheet: Balance sheet data
-            - cash_flow: Cash flow statement data
-            - key_metrics: Financial ratios and metrics
+            - income_statement: Income statement data. `date` is period-end/as-of date.
+            - balance_sheet: Balance sheet data. `date` is period-end/as-of date.
+            - cash_flow: Cash flow statement data. `date` is period-end/as-of date.
+            - key_metrics: Financial ratios and metrics. `date` is period-end/as-of date;
+              `marketCap` is period-aligned, not current.
+            - key_metrics_ttm: TTM metrics; FMP does not surface a period-end column.
             - historical_price_adjusted: Adjusted stock prices
             - dividends: Dividend history
             - analyst_estimates: Analyst EPS/revenue estimates
@@ -260,10 +264,15 @@ def fmp_search(
 @mcp.tool()
 def fmp_profile(symbol: str) -> dict:
     """
-    Get detailed company profile information.
+    Get detailed company profile information as a current FMP /profile snapshot.
 
     Returns comprehensive company data including sector, industry,
     description, CEO, employees, website, and key financial metrics.
+    The profile `mktCap` field is price times shares as of the API call time,
+    or up to 1 week stale when served from cache. FMP does not include a
+    snapshot timestamp on this endpoint. For historical period-aligned market
+    cap, use fmp_fetch(endpoint="key_metrics", period="annual") and read the
+    `date` field on each row.
 
     Args:
         symbol: Stock symbol (e.g., "AAPL", "MSFT", "GOOGL").
@@ -282,6 +291,31 @@ def fmp_profile(symbol: str) -> dict:
         fmp_profile(symbol="MSFT")
     """
     return _fmp_profile(symbol=symbol)
+
+
+@mcp.tool()
+def fmp_market_cap_check(symbol: str) -> dict:
+    """
+    Compare current profile market cap against latest annual key_metrics market cap.
+
+    Use this when fmp_profile.mktCap and fmp_fetch(endpoint="key_metrics")
+    marketCap values appear to disagree. The profile value is a current
+    snapshot; the latest annual key_metrics value is aligned to that row's
+    period-end date.
+
+    Args:
+        symbol: Stock symbol (e.g., "AAPL", "MSFT", "GOOGL").
+
+    Returns:
+        dict with status, symbol, profile_mktcap, latest_annual_mktcap,
+        latest_annual_date, delta_pct, and warning. On error: status="error"
+        with error_type and message.
+
+    Examples:
+        fmp_market_cap_check(symbol="AAPL")
+        fmp_market_cap_check(symbol="PCTY")
+    """
+    return _fmp_market_cap_check(symbol=symbol)
 
 
 @mcp.tool()
@@ -921,7 +955,6 @@ def compare_peers(
     )
 
 
-@mcp.tool()
 def get_stock_fundamentals(
     symbol: str,
     include: Optional[str] = None,

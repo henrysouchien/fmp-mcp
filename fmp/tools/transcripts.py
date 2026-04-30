@@ -25,10 +25,13 @@ Architecture note:
 import copy
 import hashlib
 import html
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
+import os
 import re
+import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -679,14 +682,16 @@ def _build_transcript_file_path(
     return FILE_OUTPUT_DIR / f"{basename}.md"
 
 
-def _write_transcript_markdown(result: dict, file_path: Path) -> None:
+def _build_transcript_body(result: dict) -> tuple[str, dict]:
     metadata = result.get("metadata", {})
     total_words = int(metadata.get("total_word_count", metadata.get("total_words", 0)) or 0)
     speaker_count = int(metadata.get("num_speakers", metadata.get("speaker_count", 0)) or 0)
     exchange_count = int(metadata.get("num_qa_exchanges", metadata.get("exchange_count", 0)) or 0)
     symbol = str(result.get("symbol", "")).upper()
-    quarter = result.get("quarter", "")
-    year = result.get("year", "")
+    quarter = int(result.get("quarter", 0) or 0)
+    year = int(result.get("year", 0) or 0)
+    filing_date = str(result.get("date", "") or "")[:10]
+    fiscal_period = f"{year}-Q{quarter}"
 
     prepared_remarks = result.get("prepared_remarks", [])
     qa_segments = result.get("qa", [])
@@ -701,65 +706,171 @@ def _write_transcript_markdown(result: dict, file_path: Path) -> None:
 
     if not has_content:
         lines.append("No content matched filters.")
-        atomic_write_text(file_path, "\n".join(lines).strip() + "\n")
-        return
+        return "\n".join(lines).strip(), _build_transcript_metadata(
+            symbol=symbol,
+            year=year,
+            quarter=quarter,
+            fiscal_period=fiscal_period,
+            filing_date=filing_date,
+            company_name=result.get("company_name"),
+        )
 
     if prepared_remarks:
         lines.append("## PREPARED REMARKS")
         for segment in prepared_remarks:
-            speaker = _safe_heading(segment.get("speaker", "")) or "Unknown"
-            role = _safe_heading(segment.get("role", ""))
-            label = f"{speaker} ({role})" if role else speaker
-            lines.append(f"### SPEAKER: {label}")
-            text = (segment.get("text", "") or "").strip()
-            if text:
-                lines.append(text)
+            _append_speaker_block(
+                lines,
+                speaker=segment.get("speaker", ""),
+                role=segment.get("role", ""),
+                text=segment.get("text", ""),
+                default_speaker="Unknown",
+            )
         lines.append("---")
 
     if qa_exchanges or qa_segments:
         lines.append("## Q&A SESSION")
 
     if qa_exchanges:
-        for idx, exchange in enumerate(qa_exchanges, start=1):
-            analyst = _safe_heading(exchange.get("analyst", "")) or "Unknown Analyst"
-            firm = _safe_heading(exchange.get("firm", ""))
-            analyst_header = f"{analyst} ({firm})" if firm else analyst
+        for exchange in qa_exchanges:
             answers = exchange.get("answers", [])
-            if answers:
-                first_answer = answers[0]
-                first_speaker = _safe_heading(first_answer.get("speaker", "")) or "Management"
-                first_role = _safe_heading(first_answer.get("role", ""))
-                first_answer_header = (
-                    f"{first_speaker} ({first_role})" if first_role else first_speaker
-                )
-            else:
-                first_answer_header = "Management"
-
-            lines.append(f"### EXCHANGE {idx}: {analyst_header} -> {first_answer_header}")
-            lines.append(f"**Question ({analyst}, Analyst):**")
-            question = (exchange.get("question", "") or "").strip()
-            if question:
-                lines.append(question)
+            _append_speaker_block(
+                lines,
+                speaker=exchange.get("analyst", ""),
+                role="Analyst",
+                text=exchange.get("question", ""),
+                default_speaker="Unknown Analyst",
+            )
 
             for answer in answers:
-                speaker = _safe_heading(answer.get("speaker", "")) or "Management"
-                role = _safe_heading(answer.get("role", ""))
-                answer_label = f"{speaker}, {role}" if role else speaker
-                lines.append(f"**Answer ({answer_label}):**")
-                text = (answer.get("text", "") or "").strip()
-                if text:
-                    lines.append(text)
+                _append_speaker_block(
+                    lines,
+                    speaker=answer.get("speaker", ""),
+                    role=answer.get("role", ""),
+                    text=answer.get("text", ""),
+                    default_speaker="Management",
+                )
     else:
         for segment in qa_segments:
-            speaker = _safe_heading(segment.get("speaker", "")) or "Unknown"
-            role = _safe_heading(segment.get("role", ""))
-            label = f"{speaker} ({role})" if role else speaker
-            lines.append(f"### SPEAKER: {label}")
-            text = (segment.get("text", "") or "").strip()
-            if text:
-                lines.append(text)
+            _append_speaker_block(
+                lines,
+                speaker=segment.get("speaker", ""),
+                role=segment.get("role", ""),
+                text=segment.get("text", ""),
+                default_speaker="Unknown",
+            )
 
-    atomic_write_text(file_path, "\n".join(lines).strip() + "\n")
+    return "\n".join(lines).strip(), _build_transcript_metadata(
+        symbol=symbol,
+        year=year,
+        quarter=quarter,
+        fiscal_period=fiscal_period,
+        filing_date=filing_date,
+        company_name=result.get("company_name"),
+    )
+
+
+def _append_speaker_block(
+    lines: list[str],
+    *,
+    speaker: object,
+    role: object,
+    text: object,
+    default_speaker: str,
+) -> None:
+    speaker_name = _safe_heading(str(speaker or "")) or default_speaker
+    speaker_role = _safe_heading(str(role or ""))
+    lines.append(
+        f"### SPEAKER: {speaker_name} ({speaker_role})"
+        if speaker_role
+        else f"### SPEAKER: {speaker_name}"
+    )
+    block_text = str(text or "").strip()
+    if block_text:
+        lines.append(block_text)
+
+
+def _build_transcript_metadata(
+    *,
+    symbol: str,
+    year: int,
+    quarter: int,
+    fiscal_period: str,
+    filing_date: str,
+    company_name: object,
+) -> dict:
+    return {
+        "document_id": f"fmp_transcripts:{symbol}_{fiscal_period}",
+        "ticker": symbol,
+        "company_name": str(company_name) if company_name else None,
+        "source": "fmp_transcripts",
+        "form_type": "TRANSCRIPT",
+        "fiscal_period": fiscal_period,
+        "filing_date": filing_date,
+        "period_end": filing_date,
+        "source_url": (
+            f"https://financialmodelingprep.com/financial-summary/{symbol}"
+            f"?transcript={year}Q{quarter}"
+        ),
+        "source_url_deep": None,
+        "source_accession": None,
+        "extraction_pipeline": _transcript_extraction_pipeline(),
+        "extraction_model": None,
+        "extraction_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _transcript_extraction_pipeline() -> str:
+    for package_name in ("fmp-mcp", "fmp_mcp"):
+        try:
+            return f"fmp_transcripts@{package_version(package_name)}"
+        except PackageNotFoundError:
+            continue
+    return "fmp_transcripts@1.0"
+
+
+def _corpus_ingest_enabled() -> bool:
+    return os.getenv("CORPUS_INGEST_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_corpus_ingest_candidate(
+    *,
+    section_raw: str,
+    filter_role_raw: str | None,
+    filter_speaker_raw: str | None,
+    is_empty: bool,
+) -> bool:
+    return (
+        section_raw == "all"
+        and not filter_role_raw
+        and not (filter_speaker_raw and filter_speaker_raw.strip())
+        and not is_empty
+    )
+
+
+def _ingest_transcript_result(result: dict) -> Path:
+    corpus_root_raw = os.getenv("CORPUS_ROOT")
+    db_path_raw = os.getenv("CORPUS_DB_PATH")
+    if not corpus_root_raw or not db_path_raw:
+        raise RuntimeError(
+            "CORPUS_ROOT and CORPUS_DB_PATH are required when CORPUS_INGEST_ENABLED=true"
+        )
+
+    # Lazy import: `core.corpus` is monorepo-internal, not shipped to fmp-mcp dist.
+    from core.corpus.db import open_corpus_db
+    from core.corpus.ingest import ingest_raw
+
+    body, metadata = _build_transcript_body(result)
+    db = open_corpus_db(Path(db_path_raw).expanduser().resolve())
+    try:
+        ingest_result = ingest_raw(
+            body,
+            metadata,
+            Path(corpus_root_raw).expanduser().resolve(),
+            db,
+        )
+    finally:
+        db.close()
+    return ingest_result.canonical_path
 
 
 def _get_cache_path(symbol: str, year: int, quarter: int) -> Path:
@@ -1020,8 +1131,18 @@ def get_earnings_transcript(
             )
 
             try:
-                _write_transcript_markdown(result, attempted_path)
-            except OSError as exc:
+                if _corpus_ingest_enabled() and _is_corpus_ingest_candidate(
+                    section_raw=section_raw,
+                    filter_role_raw=filter_role_raw,
+                    filter_speaker_raw=filter_speaker_raw,
+                    is_empty=is_empty,
+                ):
+                    output_path = _ingest_transcript_result(result)
+                else:
+                    body, _ = _build_transcript_body(result)
+                    atomic_write_text(attempted_path, body + "\n")
+                    output_path = attempted_path.resolve()
+            except (OSError, sqlite3.Error, RuntimeError) as exc:
                 return {
                     "status": "error",
                     "output": "file",
@@ -1038,7 +1159,7 @@ def get_earnings_transcript(
             response["year"] = year
             response["quarter"] = quarter
             response["output"] = "file"
-            response["file_path"] = str(attempted_path.resolve())
+            response["file_path"] = str(output_path)
             response["is_empty"] = is_empty
             response["hint"] = "Use Read tool with file_path. Grep '^### SPEAKER:' for anchors."
 

@@ -17,6 +17,7 @@ Architecture:
 - Delegates all fetching to FMPClient (single source of truth)
 """
 
+import math
 import re
 from datetime import datetime
 from typing import Any, Literal, Optional
@@ -87,6 +88,14 @@ def fmp_fetch(
 ) -> dict:
     """
     Fetch data from any registered FMP endpoint.
+
+    For financial-statement-style endpoints such as income_statement,
+    balance_sheet, cash_flow, and key_metrics, the `date` field on each row is
+    the period-end / as-of date for that row's metrics. For key_metrics,
+    `marketCap` is aligned to that row's period end; use it for historical
+    period analysis rather than current valuation. key_metrics_ttm rows reflect
+    trailing-twelve-month metrics ending at FMP's server-side cutoff; that cutoff
+    is not surfaced as a period-end column in the row.
 
     Args:
         endpoint: Name of the FMP endpoint (e.g., "income_statement", "historical_price_adjusted")
@@ -234,7 +243,13 @@ def fmp_search(query: str, limit: int = 10, exchange: Optional[str] = None) -> d
 
 def fmp_profile(symbol: str) -> dict:
     """
-    Get detailed company profile.
+    Get detailed company profile as a current FMP /profile snapshot.
+
+    The profile `mktCap` field is price times shares as of the API call time,
+    or up to 1 week stale when served from cache. FMP does not include a
+    snapshot timestamp on this endpoint. For historical period-aligned market
+    cap, use fmp_fetch(endpoint="key_metrics", period="annual") and read the
+    `date` field on each row.
 
     Args:
         symbol: Stock symbol (e.g., "AAPL", "MSFT")
@@ -265,6 +280,119 @@ def fmp_profile(symbol: str) -> dict:
 
     except Exception as e:
         return _map_exception_to_error(e, "profile", {"symbol": symbol})
+
+
+def _positive_float(value: Any) -> Optional[float]:
+    """Return a positive finite float for numeric-like values, otherwise None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric_value) or numeric_value <= 0:
+        return None
+    return numeric_value
+
+
+def _extract_error_context(result: dict, source: str) -> dict:
+    """Normalize an underlying tool error for fmp_market_cap_check."""
+    error_type = result.get("error_type") or f"{source}_error"
+    message = result.get("message") or f"{source} lookup failed"
+    return _error_response(
+        error_type,
+        f"{source} lookup failed: {message}",
+        result.get("endpoint") or source,
+        result.get("params"),
+    )
+
+
+def fmp_market_cap_check(symbol: str) -> dict:
+    """
+    Compare current profile market cap against latest annual key_metrics market cap.
+
+    Calls fmp_profile(symbol) for the current /profile snapshot and
+    fmp_fetch(endpoint="key_metrics", symbol=symbol, period="annual", limit=1)
+    for the latest annual period-aligned market cap. The profile `mktCap` value
+    is for current valuation; the key_metrics `marketCap` value is aligned to
+    `latest_annual_date` for historical period analysis.
+
+    Args:
+        symbol: Stock symbol (e.g., "AAPL", "MSFT")
+
+    Returns:
+        dict with status, symbol, profile_mktcap, latest_annual_mktcap,
+        latest_annual_date, delta_pct, and warning. On error, returns
+        status="error" with error_type and message.
+    """
+    try:
+        profile_result = fmp_profile(symbol=symbol)
+        if profile_result.get("status") == "error":
+            return _extract_error_context(profile_result, "profile")
+
+        key_metrics_result = fmp_fetch(
+            endpoint="key_metrics",
+            symbol=symbol,
+            period="annual",
+            limit=1,
+        )
+        if key_metrics_result.get("status") == "error":
+            return _extract_error_context(key_metrics_result, "key_metrics")
+
+        profile = profile_result.get("profile")
+        if not isinstance(profile, dict):
+            profile = {}
+
+        rows = key_metrics_result.get("data")
+        latest_row = rows[0] if isinstance(rows, list) and rows and isinstance(rows[0], dict) else {}
+
+        profile_mktcap = _positive_float(profile.get("mktCap"))
+        latest_annual_mktcap = _positive_float(latest_row.get("marketCap"))
+        latest_annual_date = latest_row.get("date")
+
+        response: dict[str, Any] = {
+            "status": "success",
+            "symbol": symbol,
+            "profile_mktcap": profile_mktcap,
+            "latest_annual_mktcap": latest_annual_mktcap,
+            "latest_annual_date": latest_annual_date,
+            "delta_pct": None,
+            "warning": None,
+        }
+
+        missing_values = []
+        if profile_mktcap is None:
+            missing_values.append("profile_mktcap")
+        if latest_annual_mktcap is None:
+            missing_values.append("latest_annual_mktcap")
+
+        if missing_values:
+            verb = "is" if len(missing_values) == 1 else "are"
+            response["warning"] = (
+                "Cannot compute market-cap delta because "
+                + " and ".join(missing_values)
+                + f" {verb} missing, non-numeric, or zero/non-positive."
+            )
+            return response
+
+        delta_pct = abs(profile_mktcap - latest_annual_mktcap) / max(
+            profile_mktcap,
+            latest_annual_mktcap,
+        )
+        response["delta_pct"] = delta_pct
+
+        if delta_pct > 0.20:
+            response["warning"] = (
+                f"Profile market cap and latest annual key_metrics market cap differ by "
+                f"{delta_pct:.1%}. Use profile_mktcap for current valuation; use "
+                f"latest_annual_mktcap (as of {latest_annual_date}) for historical "
+                "period analysis."
+            )
+
+        return response
+
+    except Exception as e:
+        return _map_exception_to_error(e, "fmp_market_cap_check", {"symbol": symbol})
 
 
 def fmp_list_endpoints(category: Optional[str] = None) -> dict:
@@ -364,7 +492,11 @@ TOOL_METADATA = {
     },
     "fmp_profile": {
         "name": "fmp_profile",
-        "description": "Get detailed company profile information.",
+        "description": "Get current company profile snapshot information.",
+    },
+    "fmp_market_cap_check": {
+        "name": "fmp_market_cap_check",
+        "description": "Compare current profile market cap against latest annual key_metrics market cap.",
     },
     "fmp_list_endpoints": {
         "name": "fmp_list_endpoints",

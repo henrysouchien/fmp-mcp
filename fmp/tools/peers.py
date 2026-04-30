@@ -22,7 +22,7 @@ from typing import Optional, Literal
 from cachetools import TTLCache
 
 from ..client import FMPClient
-from utils.fmp_helpers import (
+from fmp._shared.fmp_helpers import (
     compute_forward_ev_ebitda,
     compute_forward_ev_sales,
     compute_forward_pe,
