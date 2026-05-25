@@ -21,6 +21,9 @@ from fmp.estimates_client import (
     get as _api_get,
 )
 
+DEFAULT_MIN_EPS_DELTA_PCT = 0.01
+DEFAULT_MIN_REVENUE_DELTA_PCT = 0.005
+
 
 def _normalize_tickers(tickers: Optional[list[str] | str]) -> list[str]:
     if tickers is None:
@@ -68,6 +71,18 @@ def _delta(current: float | None, baseline: float | None) -> float | None:
     return current - baseline
 
 
+def _relative_delta(delta: Any, baseline: Any) -> float | None:
+    if delta is None or baseline is None:
+        return None
+    try:
+        denominator = abs(float(baseline))
+        if denominator == 0:
+            return None
+        return float(delta) / denominator
+    except (TypeError, ValueError):
+        return None
+
+
 def _direction(eps_delta: float | None, revenue_delta: float | None) -> str:
     signal = eps_delta if eps_delta is not None else revenue_delta
     if signal is None:
@@ -77,6 +92,68 @@ def _direction(eps_delta: float | None, revenue_delta: float | None) -> str:
     if signal < 0:
         return "down"
     return "flat"
+
+
+def _validate_materiality_threshold(name: str, value: float) -> float:
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if threshold < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return threshold
+
+
+def _annotate_materiality(
+    row: dict[str, Any],
+    *,
+    min_eps_delta_pct: float,
+    min_revenue_delta_pct: float,
+) -> dict[str, Any]:
+    annotated = dict(row)
+    annotated["raw_direction"] = row.get("direction")
+
+    eps_delta_pct = _relative_delta(row.get("eps_delta"), row.get("baseline_eps_avg"))
+    revenue_delta_pct = _relative_delta(row.get("revenue_delta"), row.get("baseline_revenue_avg"))
+    annotated["eps_delta_pct"] = eps_delta_pct
+    annotated["revenue_delta_pct"] = revenue_delta_pct
+
+    eps_material = eps_delta_pct is not None and abs(eps_delta_pct) >= min_eps_delta_pct
+    revenue_material = (
+        revenue_delta_pct is not None and abs(revenue_delta_pct) >= min_revenue_delta_pct
+    )
+
+    materiality_basis: list[str] = []
+    if eps_material:
+        materiality_basis.append("eps_delta_pct")
+    if revenue_material:
+        materiality_basis.append("revenue_delta_pct")
+
+    annotated["is_material"] = bool(materiality_basis)
+    annotated["materiality_basis"] = materiality_basis
+    annotated["materiality_score"] = max(
+        abs(value) for value in (eps_delta_pct, revenue_delta_pct) if value is not None
+    ) if eps_delta_pct is not None or revenue_delta_pct is not None else None
+    annotated["materiality_thresholds"] = {
+        "min_eps_delta_pct": min_eps_delta_pct,
+        "min_revenue_delta_pct": min_revenue_delta_pct,
+    }
+
+    if eps_material:
+        annotated["direction"] = _direction(row.get("eps_delta"), None)
+    elif revenue_material:
+        annotated["direction"] = _direction(None, row.get("revenue_delta"))
+    else:
+        annotated["direction"] = "flat"
+
+    if materiality_basis:
+        annotated["materiality_reason"] = "passed_" + "_and_".join(materiality_basis)
+    elif eps_delta_pct is None and revenue_delta_pct is None:
+        annotated["materiality_reason"] = "missing_baseline"
+    else:
+        annotated["materiality_reason"] = "below_threshold"
+
+    return annotated
 
 
 def get_estimate_revisions(
@@ -165,6 +242,8 @@ def _get_estimate_revisions_http(
     last = revisions[-1]
     eps_delta = _delta(last.get("eps_avg"), first.get("eps_avg"))
     revenue_delta = _delta(last.get("revenue_avg"), first.get("revenue_avg"))
+    eps_delta_pct = _relative_delta(eps_delta, first.get("eps_avg"))
+    revenue_delta_pct = _relative_delta(revenue_delta, first.get("revenue_avg"))
 
     return {
         "status": "success",
@@ -175,7 +254,9 @@ def _get_estimate_revisions_http(
         "first_snapshot_date": first.get("snapshot_date"),
         "latest_snapshot_date": last.get("snapshot_date"),
         "eps_delta": eps_delta,
+        "eps_delta_pct": eps_delta_pct,
         "revenue_delta": revenue_delta,
+        "revenue_delta_pct": revenue_delta_pct,
         "direction": _direction(eps_delta, revenue_delta),
         "revisions": revisions,
     }
@@ -186,8 +267,11 @@ def screen_estimate_revisions(
     days: int = 30,
     direction: Literal["up", "down", "all"] = "all",
     period: Literal["quarter", "annual"] = "quarter",
+    min_eps_delta_pct: float = DEFAULT_MIN_EPS_DELTA_PCT,
+    min_revenue_delta_pct: float = DEFAULT_MIN_REVENUE_DELTA_PCT,
+    include_immaterial: bool = False,
 ) -> dict:
-    """Screen a ticker universe for estimate momentum over a lookback window."""
+    """Screen a ticker universe for material estimate momentum over a lookback window."""
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
@@ -196,6 +280,14 @@ def screen_estimate_revisions(
                 "status": "error",
                 "error": "days must be non-negative",
             }
+        min_eps_delta_pct = _validate_materiality_threshold(
+            "min_eps_delta_pct",
+            min_eps_delta_pct,
+        )
+        min_revenue_delta_pct = _validate_materiality_threshold(
+            "min_revenue_delta_pct",
+            min_revenue_delta_pct,
+        )
 
         if not _ESTIMATE_API_URL:
             return {
@@ -206,15 +298,31 @@ def screen_estimate_revisions(
         clean_tickers = _normalize_tickers(tickers)
 
         summary = _screen_http(clean_tickers, days, period)
+        summary = [
+            _annotate_materiality(
+                item,
+                min_eps_delta_pct=min_eps_delta_pct,
+                min_revenue_delta_pct=min_revenue_delta_pct,
+            )
+            for item in summary
+            if isinstance(item, dict)
+        ]
+
+        if not include_immaterial:
+            summary = [item for item in summary if item.get("is_material")]
 
         if direction != "all":
             summary = [item for item in summary if item.get("direction") == direction]
 
         summary.sort(
             key=lambda row: abs(
-                row.get("eps_delta")
-                if row.get("eps_delta") is not None
-                else (row.get("revenue_delta") or 0.0)
+                row.get("materiality_score")
+                if row.get("materiality_score") is not None
+                else (
+                    row.get("eps_delta")
+                    if row.get("eps_delta") is not None
+                    else (row.get("revenue_delta") or 0.0)
+                )
             ),
             reverse=True,
         )
@@ -225,6 +333,9 @@ def screen_estimate_revisions(
             "days": days,
             "direction": direction,
             "tickers_requested": clean_tickers if clean_tickers else "all",
+            "min_eps_delta_pct": min_eps_delta_pct,
+            "min_revenue_delta_pct": min_revenue_delta_pct,
+            "include_immaterial": include_immaterial,
             "result_count": len(summary),
             "results": summary,
         }

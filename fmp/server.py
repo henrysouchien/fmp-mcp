@@ -496,13 +496,18 @@ def screen_estimate_revisions(
     days: int = 30,
     direction: Literal["up", "down", "all"] = "all",
     period: Literal["quarter", "annual"] = "quarter",
+    min_eps_delta_pct: float = 0.01,
+    min_revenue_delta_pct: float = 0.005,
+    include_immaterial: bool = False,
 ) -> dict:
     """
-    Screen a ticker universe for estimate momentum.
+    Screen a ticker universe for material estimate momentum.
 
     Compares latest estimates against a lookback snapshot (`days` ago) and
-    returns per-ticker deltas/direction. If `tickers` is omitted, screens the
-    full stored universe.
+    returns per-ticker deltas/direction. By default, trivial revisions are
+    filtered out unless either EPS changed by at least 1% of baseline consensus
+    or revenue changed by at least 0.5% of baseline consensus. If `tickers` is
+    omitted, screens the full stored universe.
 
     Args:
         tickers: Optional tickers as JSON array or comma-separated string.
@@ -515,9 +520,16 @@ def screen_estimate_revisions(
         period: Estimate horizon:
             - "quarter": Quarterly estimates (default)
             - "annual": Annual estimates
+        min_eps_delta_pct: Minimum absolute EPS change as decimal fraction of
+            baseline EPS consensus. Default 0.01 = 1%.
+        min_revenue_delta_pct: Minimum absolute revenue change as decimal
+            fraction of baseline revenue consensus. Default 0.005 = 0.5%.
+        include_immaterial: If true, return rows below materiality thresholds
+            annotated with `is_material=false` instead of filtering them.
 
     Returns:
-        Ranked revision summary rows with EPS/revenue deltas.
+        Ranked material revision summary rows with EPS/revenue deltas and
+        relative materiality fields.
     """
     if not _HAS_ESTIMATES:
         return {
@@ -530,6 +542,9 @@ def screen_estimate_revisions(
         days=days,
         direction=direction,
         period=period,
+        min_eps_delta_pct=min_eps_delta_pct,
+        min_revenue_delta_pct=min_revenue_delta_pct,
+        include_immaterial=include_immaterial,
     )
 
 
