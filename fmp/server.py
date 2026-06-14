@@ -26,6 +26,23 @@ import json
 from typing import Any
 from typing import Literal, Optional
 
+# --- bootstrap_env path discovery (auto-injected for `python3 path/to/file.py` invocations) ---
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+_p = _BootstrapPath(__file__).resolve()
+while _p.parent != _p:
+    if (_p / "bootstrap_env.py").exists():
+        if str(_p) not in _bootstrap_sys.path:
+            _bootstrap_sys.path.insert(0, str(_p))
+        break
+    _p = _p.parent
+del _p, _bootstrap_sys, _BootstrapPath
+# --- end auto-injected ---
+
+import bootstrap_env
+
+bootstrap_env.bootstrap(required=["FMP_API_KEY"])
+
 from fastmcp import FastMCP
 
 from fmp.tools.fmp_core import (
@@ -35,6 +52,7 @@ from fmp.tools.fmp_core import (
     fmp_market_cap_check as _fmp_market_cap_check,
     fmp_profile as _fmp_profile,
     fmp_search as _fmp_search,
+    get_price_performance_windows as _get_price_performance_windows,
 )
 from fmp.tools.screening import screen_stocks as _screen_stocks
 from fmp.tools.peers import compare_peers as _compare_peers
@@ -74,6 +92,7 @@ Use these tools to fetch financial data:
 - fmp_search: Search for companies by name
 - fmp_profile: Get company profile details
 - fmp_market_cap_check: Compare current vs latest annual market cap
+- get_price_performance_windows: Get compact benchmark-relative price windows
 - get_estimate_revisions: Get historical estimate revisions for one ticker/fiscal period
 - screen_estimate_revisions: Screen tickers for up/down estimate momentum
 - screen_stocks: Screen stocks by fundamental criteria
@@ -170,6 +189,11 @@ def fmp_fetch(
             - key_metrics: Financial ratios and metrics. `date` is period-end/as-of date;
               `marketCap` is period-aligned, not current.
             - key_metrics_ttm: TTM metrics; FMP does not surface a period-end column.
+            - historical_price_eod: Raw end-of-day prices and FX pair closes.
+              For historical FX, use symbols such as USDTWD with from_date/to_date,
+              then label basis as management_guidance_fx_assumption when guidance
+              provides the FX rate or fmp_historical_fx_exact_date /
+              fmp_historical_fx_previous_close when using FMP daily closes.
             - historical_price_adjusted: Adjusted stock prices
             - dividends: Dividend history
             - analyst_estimates: Analyst EPS/revenue estimates
@@ -199,6 +223,9 @@ def fmp_fetch(
 
         # Get adjusted prices for date range
         fmp_fetch(endpoint="historical_price_adjusted", symbol="AAPL", from_date="2024-01-01")
+
+        # Get historical USD/TWD FX close for guidance bridge work
+        fmp_fetch(endpoint="historical_price_eod", symbol="USDTWD", from_date="2025-03-11", to_date="2025-03-11")
 
         # Get Q4 2024 earnings transcript
         fmp_fetch(endpoint="earnings_transcript", symbol="AAPL", year=2024, quarter=4)
@@ -262,7 +289,57 @@ def fmp_search(
 
 
 @mcp.tool()
-def fmp_profile(symbol: str) -> dict:
+def get_price_performance_windows(
+    symbol: str,
+    benchmark_symbol: str = "SPY",
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    lookback_years: int = 5,
+    window_days: int = 63,
+    max_windows: int = 5,
+    direction: Literal["both", "outperformance", "underperformance"] = "both",
+    use_cache: bool = True,
+) -> dict:
+    """
+    Get compact benchmark-relative price-performance windows.
+
+    Use this for historical-coincidence evidence when a workflow needs 3-5
+    outperformance/underperformance periods. It fetches adjusted historical
+    prices for the stock and benchmark, aligns common trading dates, computes
+    rolling returns, and returns only the largest non-overlapping windows. This
+    avoids raw historical-price CSV parsing for ordinary stock-move analysis.
+
+    Args:
+        symbol: Stock symbol to analyze.
+        benchmark_symbol: Benchmark symbol for relative returns (default SPY).
+        from_date: Optional start date (YYYY-MM-DD). Defaults to lookback_years ago.
+        to_date: Optional end date (YYYY-MM-DD). Defaults to today.
+        lookback_years: Default lookback when from_date is omitted.
+        window_days: Common-trading-day window length for each return slice.
+        max_windows: Maximum windows to return (1-10).
+        direction: both, outperformance, or underperformance.
+        use_cache: Whether to use cached FMP data.
+
+    Returns:
+        dict with status, params, source metadata, and windows[] containing
+        start/end dates, stock return, benchmark return, relative return, and
+        direction.
+    """
+    return _get_price_performance_windows(
+        symbol=symbol,
+        benchmark_symbol=benchmark_symbol,
+        from_date=from_date,
+        to_date=to_date,
+        lookback_years=lookback_years,
+        window_days=window_days,
+        max_windows=max_windows,
+        direction=direction,
+        use_cache=use_cache,
+    )
+
+
+@mcp.tool()
+def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> dict:
     """
     Get detailed company profile information as a current FMP /profile snapshot.
 
@@ -276,6 +353,8 @@ def fmp_profile(symbol: str) -> dict:
 
     Args:
         symbol: Stock symbol (e.g., "AAPL", "MSFT", "GOOGL").
+        ticker: Alias for symbol, accepted for consistency with other
+            ticker-keyed tools.
 
     Returns:
         dict with status, symbol, and profile containing:
@@ -288,9 +367,9 @@ def fmp_profile(symbol: str) -> dict:
 
     Examples:
         fmp_profile(symbol="AAPL")
-        fmp_profile(symbol="MSFT")
+        fmp_profile(ticker="MSFT")
     """
-    return _fmp_profile(symbol=symbol)
+    return _fmp_profile(symbol=symbol, ticker=ticker)
 
 
 @mcp.tool()
@@ -418,7 +497,7 @@ def screen_stocks(
         is_etf: Set to true to screen ETFs only, false for stocks only.
         is_fund: Set to true to screen funds only, false to exclude funds.
         limit: Maximum number of results (default: 50).
-        format: Output format:
+        format: Output format. Exposed as Literal["full", "summary"]; values are case-sensitive:
             - "summary": Key metrics per result (symbol, name, sector, market cap, price, beta)
             - "full": All available fields from the screener
 
@@ -464,7 +543,7 @@ def get_estimate_revisions(
     """
     Get estimate revision history for one ticker and fiscal period.
 
-    Reads snapshots from the local estimate store populated by the monthly
+    Reads snapshots through the hosted estimates API backed by the monthly
     collection job. If `fiscal_date` is omitted, defaults to the nearest
     available upcoming fiscal period for the ticker.
 
@@ -889,6 +968,7 @@ def get_events_calendar(
 
     Can show market-wide calendars or filter to specific symbols.
     Useful for tracking upcoming catalysts and corporate actions.
+    Date ranges wider than 90 days are split into FMP-compatible windows internally.
     Note: For portfolio-aware auto-fill, use get_portfolio_events_calendar on portfolio-mcp.
 
     Args:
@@ -900,7 +980,8 @@ def get_events_calendar(
             - "all": All event types merged and sorted by date
         from_date: Start date in YYYY-MM-DD format (default: today).
         to_date: End date in YYYY-MM-DD format (default: today + 30 days).
-            Max 90-day window.
+            Requests may span more than 90 days; the tool splits them internally
+            because FMP calendar endpoints accept max 90-day windows per call.
         symbols: Comma-separated tickers to filter results (e.g., "AAPL,MSFT").
         limit: Maximum number of events to return (max: 500).
             If omitted, defaults to 20 for unfiltered event_type="all",
@@ -934,13 +1015,19 @@ def compare_peers(
     peers: Optional[str] = None,
     limit: int = 5,
     format: Literal["full", "summary"] = "summary",
+    peer_context: Optional[Literal["operating", "valuation", "capital_allocation"]] = None,
+    metric: Optional[str] = None,
+    fiscal_year: Optional[int] = None,
 ) -> dict:
     """
     Compare a stock against its peers on key financial ratios.
 
-    Fetches the peer group for a stock (companies in the same sector with
-    similar market cap) and builds a side-by-side comparison of financial
-    ratios including valuation, profitability, margins, and leverage.
+    Fetches the peer group for a stock and builds a side-by-side comparison of
+    financial ratios including valuation, profitability, margins, and leverage.
+    By default, auto-discovery is operating-peer oriented. For dividend payout,
+    buyback, and shareholder-return questions, pass peer_context="capital_allocation"
+    or metric="dividend_payout" so the peer set favors mature dividend-paying
+    capital-allocation comps over no-dividend growth operating peers.
 
     Args:
         symbol: Stock symbol to compare (e.g., "AAPL", "MSFT").
@@ -952,6 +1039,12 @@ def compare_peers(
               ROA, gross/operating/net margin, debt/equity, current ratio,
               dividend yield, PEG ratio)
             - "full": All TTM ratios for each peer (60+ metrics)
+        peer_context: Optional peer-selection context. Use "capital_allocation"
+            for payout ratio, dividend, buyback, or shareholder-return metrics.
+        metric: Optional metric hint used to infer peer_context.
+        fiscal_year: Optional fiscal year for supported annual metric
+            comparisons. For "FY24", pass 2024. Currently supports
+            metric="dividend_payout_ratio".
 
     Returns:
         Peer comparison data with status field ("success" or "error").
@@ -960,6 +1053,7 @@ def compare_peers(
         "Compare AAPL to its peers" -> compare_peers(symbol="AAPL")
         "How does MSFT stack up against peers?" -> compare_peers(symbol="MSFT")
         "Compare NVDA against AMD and INTC" -> compare_peers(symbol="NVDA", peers="AMD,INTC")
+        "Rank KO payout ratio vs mature comps" -> compare_peers(symbol="KO", peer_context="capital_allocation")
         "Show me GOOGL's peer group ratios" -> compare_peers(symbol="GOOGL", format="full")
     """
     return _compare_peers(
@@ -967,6 +1061,9 @@ def compare_peers(
         peers=peers,
         limit=limit,
         format=format,
+        peer_context=peer_context,
+        metric=metric,
+        fiscal_year=fiscal_year,
     )
 
 

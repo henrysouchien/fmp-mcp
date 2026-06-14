@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sys
@@ -10,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 from core.corpus.db import open_corpus_db
 from core.corpus.ingest import ingest_raw
+import core.corpus.validation as corpus_validation
 from fmp.tools import transcripts
 from fmp.tools.transcripts import _build_transcript_body
 
@@ -89,6 +91,89 @@ def test_via_ingest_raw(tmp_path) -> None:
     db.close()
 
 
+def test_current_operating_transcript_stamps_cik(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    profile_dir = tmp_path / 'profiles'
+    profile_dir.mkdir()
+    (profile_dir / 'MSFT.json').write_text(
+        json.dumps({'cik': '789019', 'isEtf': False}),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
+    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    body, metadata = _build_transcript_body(
+        _sample_result(date=datetime.now(UTC).date().isoformat())
+    )
+    corpus_root = tmp_path / 'corpus'
+    db = open_corpus_db(tmp_path / 'corpus.sqlite3')
+
+    ingest_raw(body, metadata, corpus_root, db)
+    row = db.execute(
+        'SELECT cik FROM documents WHERE document_id = ?',
+        ('fmp_transcripts:MSFT_2025-Q1',),
+    ).fetchone()
+
+    assert row['cik'] == '0000789019'
+    db.close()
+
+
+def test_current_etf_transcript_does_not_stamp_trust_cik(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    profile_dir = tmp_path / 'profiles'
+    profile_dir.mkdir()
+    (profile_dir / 'SPY.json').write_text(
+        json.dumps({'cik': '0000884394', 'isEtf': True}),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
+    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    body, metadata = _build_transcript_body(
+        _sample_result(symbol='SPY', date=datetime.now(UTC).date().isoformat())
+    )
+    corpus_root = tmp_path / 'corpus'
+    db = open_corpus_db(tmp_path / 'corpus.sqlite3')
+
+    ingest_raw(body, metadata, corpus_root, db)
+    row = db.execute(
+        'SELECT cik FROM documents WHERE document_id = ?',
+        ('fmp_transcripts:SPY_2025-Q1',),
+    ).fetchone()
+
+    assert row['cik'] is None
+    db.close()
+
+
+def test_historical_transcript_does_not_stamp_cik(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    profile_dir = tmp_path / 'profiles'
+    profile_dir.mkdir()
+    (profile_dir / 'MSFT.json').write_text(
+        json.dumps({'cik': '789019', 'isEtf': False}),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
+    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    historical_date = (datetime.now(UTC).date() - timedelta(days=400)).isoformat()
+    body, metadata = _build_transcript_body(_sample_result(date=historical_date))
+    corpus_root = tmp_path / 'corpus'
+    db = open_corpus_db(tmp_path / 'corpus.sqlite3')
+
+    ingest_raw(body, metadata, corpus_root, db)
+    row = db.execute(
+        'SELECT cik FROM documents WHERE document_id = ?',
+        ('fmp_transcripts:MSFT_2025-Q1',),
+    ).fetchone()
+
+    assert row['cik'] is None
+    db.close()
+
+
 def test_get_earnings_transcript_env_ingests_canonical_full_transcript(
     tmp_path,
     monkeypatch,
@@ -124,19 +209,21 @@ def test_get_earnings_transcript_env_ingests_canonical_full_transcript(
     db.close()
 
 
-def test_get_earnings_transcript_filtered_file_stays_legacy_when_env_enabled(
+def test_get_earnings_transcript_filtered_file_is_scratch_when_env_enabled(
     tmp_path,
     monkeypatch,
 ) -> None:
     cache_path = tmp_path / 'parsed.json'
     cache_path.write_text(json.dumps(_sample_result()), encoding='utf-8')
     legacy_dir = tmp_path / 'legacy-output'
+    corpus_root = tmp_path / 'corpus'
+    db_path = tmp_path / 'corpus.sqlite3'
 
     monkeypatch.setattr(transcripts, '_get_cache_path', lambda symbol, year, quarter: cache_path)
     monkeypatch.setattr(transcripts, 'FILE_OUTPUT_DIR', legacy_dir)
     monkeypatch.setenv('CORPUS_INGEST_ENABLED', 'true')
-    monkeypatch.setenv('CORPUS_ROOT', str(tmp_path / 'corpus'))
-    monkeypatch.setenv('CORPUS_DB_PATH', str(tmp_path / 'corpus.sqlite3'))
+    monkeypatch.setenv('CORPUS_ROOT', str(corpus_root))
+    monkeypatch.setenv('CORPUS_DB_PATH', str(db_path))
 
     response = transcripts.get_earnings_transcript(
         symbol='MSFT',
@@ -150,14 +237,31 @@ def test_get_earnings_transcript_filtered_file_stays_legacy_when_env_enabled(
     assert response['status'] == 'success'
     assert response['file_path'].startswith(str(legacy_dir))
     assert Path(response['file_path']).exists()
+    assert not corpus_root.exists()
+
+    db = open_corpus_db(db_path)
+    try:
+        row = db.execute(
+            'SELECT COUNT(*) AS count FROM documents WHERE document_id = ?',
+            ('fmp_transcripts:MSFT_2025-Q1',),
+        ).fetchone()
+    finally:
+        db.close()
+    assert row['count'] == 0
 
 
-def _sample_result() -> dict:
+def _sample_result(
+    *,
+    symbol: str = 'MSFT',
+    year: int = 2025,
+    quarter: int = 1,
+    date: str = '2025-01-29',
+) -> dict:
     return {
-        'symbol': 'MSFT',
-        'quarter': 1,
-        'year': 2025,
-        'date': '2025-01-29',
+        'symbol': symbol,
+        'quarter': quarter,
+        'year': year,
+        'date': date,
         'metadata': {
             'total_word_count': 1234,
             'num_speakers': 4,

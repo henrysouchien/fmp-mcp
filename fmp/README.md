@@ -214,13 +214,14 @@ register_endpoint(FMPEndpoint(
 
 Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 
-**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server currently exposes 19 tools:
+**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server currently exposes 20 tools:
 
 | MCP Tool | Description |
 |----------|-------------|
 | `fmp_fetch` | Fetch data from any registered endpoint |
 | `fmp_search` | Search for companies by name/ticker |
 | `fmp_profile` | Get company profile details |
+| `fmp_market_cap_check` | Compare current vs latest annual market cap |
 | `fmp_list_endpoints` | List available endpoints |
 | `fmp_describe` | Get endpoint parameter documentation |
 | `screen_stocks` | Screen stocks by fundamental criteria |
@@ -494,11 +495,11 @@ Write and execute a Python script.
 
 ## Estimate Revision Tracking
 
-The FMP layer includes a local estimate store that snapshots analyst consensus estimates over time, enabling revision tracking and estimate momentum screening.
+The FMP layer exposes estimate revision tools backed by the hosted estimates API. The server-side collection job snapshots analyst consensus estimates over time, enabling revision tracking and estimate momentum screening without a local database dependency for read-only MCP queries.
 
 ### How It Works
 
-A monthly cron job (`fmp/scripts/snapshot_estimates.py`) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`, configurable via `FMP_DATA_DATABASE_URL`). Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
+A monthly cron job (`fmp/scripts/snapshot_estimates.py`) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`). Writes prefer `FMP_DATA_WRITE_DATABASE_URL`; reads prefer `FMP_DATA_READ_DATABASE_URL`; `FMP_DATA_DATABASE_URL` remains as the legacy fallback. Production least-privilege deployments should set `FMP_DATA_ENSURE_SCHEMA=false` and apply schema changes separately. Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
 
 ### Usage
 
@@ -563,7 +564,8 @@ python3 fmp/scripts/snapshot_estimates.py --database-url postgresql://postgres@l
 ### Storage
 
 - **Database:** `fmp_data_db` on Postgres (`snapshot_runs` + `estimate_snapshots` + `collection_failures`)
-- **Connection:** `FMP_DATA_DATABASE_URL` (default: `postgresql://postgres@localhost:5432/fmp_data_db`)
+- **Connection:** `FMP_DATA_READ_DATABASE_URL` for reads, `FMP_DATA_WRITE_DATABASE_URL` for writes, `FMP_DATA_DATABASE_URL` as a legacy fallback (default: `postgresql://postgres@localhost:5432/fmp_data_db`)
+- **Schema bootstrap:** write mode runs the idempotent schema file by default for local development. Set `FMP_DATA_ENSURE_SCHEMA=false` when the runtime writer role should be DML-only.
 - **Growth:** ~60K rows/run × 12 runs/year = ~720K rows/year, ~200-300MB/year of storage
 - **Design:** Insert-only, immutable snapshots. UNIQUE constraint on `(ticker, fiscal_date, period, snapshot_date)` prevents duplicates.
 - **Failure tracking:** `collection_failures` table records per-ticker errors with structured error types (`no_income_statement`, `no_estimates`, `api_error`, `unknown`). Query with `store.get_failure_summary(min_runs=2)` to find persistently failing tickers.

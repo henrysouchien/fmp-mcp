@@ -18,11 +18,12 @@ except ImportError:
 
 import requests as _requests
 
-ESTIMATE_API_URL = os.getenv("ESTIMATE_API_URL", "https://financialmodelupdater.com")
+DEFAULT_ESTIMATE_API_URL = "https://www.edgarparser.com"
+ESTIMATE_API_URL = os.getenv("ESTIMATE_API_URL", DEFAULT_ESTIMATE_API_URL)
 ESTIMATE_API_KEY = os.getenv("EDGAR_API_KEY")
 MISSING_API_URL_ERROR = (
     "ESTIMATE_API_URL environment variable is required. "
-    "Set it to the hosted estimates API URL (e.g. https://financialmodelupdater.com)."
+    f"Set it to the hosted estimates API URL (e.g. {DEFAULT_ESTIMATE_API_URL})."
 )
 
 

@@ -308,12 +308,19 @@ def get_etf_holdings(
                     _add_source_status(source_status, section, False, 0)
                     warnings.append(f"{section}: {result['error']}")
 
-        if requested_sections and all(not source_status[s]["ok"] for s in requested_sections):
+        failed_sections = [
+            section for section in requested_sections if not source_status[section]["ok"]
+        ]
+        if failed_sections:
             return {
                 "status": "error",
-                "error": "Failed to fetch all requested ETF sections.",
+                "error": (
+                    "Failed to fetch requested ETF section(s): "
+                    f"{', '.join(failed_sections)}."
+                ),
                 "symbol": normalized_symbol,
                 "requested_sections": requested_sections,
+                "failed_sections": failed_sections,
                 "source_status": source_status,
                 "warnings": warnings,
                 **({"invalid_sections": invalid_sections} if invalid_sections else {}),

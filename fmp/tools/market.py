@@ -488,16 +488,16 @@ def _fetch_calendar(
 # ---------------------------------------------------------------------------
 
 
-def _safe_fetch(
+def _fetch_snapshot_frame(
     client: FMPClient,
     endpoint_name: str,
     use_cache: bool = True,
     **params,
 ) -> pd.DataFrame:
-    """Fetch from FMP, returning empty DataFrame on error."""
+    """Fetch a snapshot frame, preserving provider failures as tool errors."""
     try:
         return client.fetch(endpoint_name, use_cache=use_cache, **params)
-    except Exception:
+    except FMPEmptyResponseError:
         return pd.DataFrame()
 
 
@@ -592,8 +592,8 @@ def _fetch_sector_overview(
     fetch_params = {"date": snapshot_date}
 
     # Fetch performance and P/E snapshots
-    perf_df = _safe_fetch(client, perf_endpoint, use_cache=use_cache, **fetch_params)
-    pe_df = _safe_fetch(client, pe_endpoint, use_cache=use_cache, **fetch_params)
+    perf_df = _fetch_snapshot_frame(client, perf_endpoint, use_cache=use_cache, **fetch_params)
+    pe_df = _fetch_snapshot_frame(client, pe_endpoint, use_cache=use_cache, **fetch_params)
 
     # Determine the snapshot date from data (if not provided by user)
     display_date = snapshot_date
@@ -740,7 +740,7 @@ def _fetch_symbol_pe_comparison(
         snapshot_date = _last_trading_day()
 
     client = FMPClient()
-    pe_df = _safe_fetch(client, pe_endpoint, use_cache=use_cache, date=snapshot_date)
+    pe_df = _fetch_snapshot_frame(client, pe_endpoint, use_cache=use_cache, date=snapshot_date)
 
     benchmark_lookup: dict[str, tuple[str, float]] = {}
     if not pe_df.empty:
@@ -1225,6 +1225,7 @@ def _normalize_events(records: list[dict]) -> tuple[list[dict], Optional[str]]:
         events.append({
             "event": event_name or "",
             "date": event_date,
+            "country": rec.get("country") or "",
             "estimate": rec.get("estimate"),
             "impact": rec.get("impact") or "",
         })
@@ -1306,6 +1307,7 @@ def get_market_context(
         if "indices" in requested_sections:
             indices = []
             as_of = None
+            index_errors = []
             for symbol, name in _INDEX_NAMES.items():
                 result = _safe_fetch_records(
                     client, "historical_price_eod", use_cache=use_cache,
@@ -1321,7 +1323,13 @@ def get_market_context(
                     })
                     if as_of is None:
                         as_of = str(rec.get("date", ""))
-            if indices:
+                elif not result["ok"]:
+                    index_errors.append(f"{symbol}: {result['error']}")
+            if index_errors:
+                response["indices"] = indices
+                _add_source_status(source_status, "indices", False, len(indices), as_of)
+                warnings.append(f"indices: {'; '.join(index_errors)}")
+            elif indices:
                 response["indices"] = indices
                 _add_source_status(source_status, "indices", True, len(indices), as_of)
             else:
@@ -1441,13 +1449,20 @@ def get_market_context(
         response["source_status"] = source_status
         response["warnings"] = warnings
 
-        if requested_sections and all(not source_status[s]["ok"] for s in requested_sections):
+        failed_sections = [
+            section for section in requested_sections if not source_status[section]["ok"]
+        ]
+        if failed_sections:
             return {
                 "status": "error",
-                "error": "Failed to fetch all requested sections.",
+                "error": (
+                    "Failed to fetch requested market context section(s): "
+                    f"{', '.join(failed_sections)}."
+                ),
                 "date": today,
                 "generated_at": generated_at,
                 "requested_sections": requested_sections,
+                "failed_sections": failed_sections,
                 "source_status": source_status,
                 "warnings": warnings,
                 **({"invalid_sections": invalid_sections} if invalid_sections else {}),

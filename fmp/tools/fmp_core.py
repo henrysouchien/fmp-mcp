@@ -19,7 +19,7 @@ Architecture:
 
 import math
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal, Optional
 
 from ..client import get_client
@@ -33,6 +33,7 @@ from ..exceptions import (
 )
 from ..registry import get_categories
 from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
+from .beta_guard import add_beta_warning
 
 
 def _error_response(
@@ -97,8 +98,17 @@ def fmp_fetch(
     trailing-twelve-month metrics ending at FMP's server-side cutoff; that cutoff
     is not surfaced as a period-end column in the row.
 
+    For historical FX, use endpoint="historical_price_eod" with the FMP FX pair
+    symbol and from_date/to_date. Example: symbol="USDTWD" returns USD/TWD
+    daily closes; if converting TWD to USD, apply the configured inversion from
+    config/exchange_mappings.yaml. Label the basis as
+    management_guidance_fx_assumption when management gives the FX rate, or as
+    fmp_historical_fx_exact_date / fmp_historical_fx_previous_close when using
+    FMP daily close data.
+
     Args:
-        endpoint: Name of the FMP endpoint (e.g., "income_statement", "historical_price_adjusted")
+        endpoint: Name of the FMP endpoint (e.g., "income_statement", "historical_price_adjusted",
+            "historical_price_eod")
         symbol: Stock symbol (required for most endpoints)
         period: Reporting period ("annual" or "quarter") for financial statements
         limit: Maximum number of records to return
@@ -121,6 +131,7 @@ def fmp_fetch(
     Examples:
         fmp_fetch("income_statement", symbol="AAPL", period="annual", limit=3)
         fmp_fetch("historical_price_adjusted", symbol="AAPL", from_date="2024-01-01")
+        fmp_fetch("historical_price_eod", symbol="USDTWD", from_date="2025-03-11", to_date="2025-03-11")
         fmp_fetch("treasury_rates", from_date="2024-01-01", to_date="2024-12-31")
     """
     # Build params dict, filtering out None values
@@ -200,6 +211,317 @@ def fmp_fetch(
         return _map_exception_to_error(e, endpoint, params)
 
 
+def _price_column(columns: list[str]) -> str | None:
+    for candidate in ("adjClose", "adjustedClose", "close", "price"):
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _prepare_price_frame(frame: Any, *, symbol: str) -> tuple[Any | None, str | None, str | None]:
+    """Normalize an FMP price DataFrame to date/price columns for window math."""
+    if frame is None or getattr(frame, "empty", True):
+        return None, None, f"No historical price rows returned for {symbol}."
+
+    columns = [str(column) for column in list(getattr(frame, "columns", []))]
+    if "date" not in columns:
+        return None, None, f"Historical price rows for {symbol} did not include a date column."
+
+    price_column = _price_column(columns)
+    if price_column is None:
+        return None, None, (
+            f"Historical price rows for {symbol} did not include adjClose, adjustedClose, close, or price."
+        )
+
+    import pandas as pd
+
+    prepared = frame[["date", price_column]].copy()
+    prepared["date"] = pd.to_datetime(prepared["date"], errors="coerce")
+    prepared[price_column] = pd.to_numeric(prepared[price_column], errors="coerce")
+    prepared = prepared.dropna(subset=["date", price_column])
+    prepared = prepared[prepared[price_column] > 0]
+    prepared = prepared.sort_values("date").groupby("date", as_index=False).last()
+    prepared = prepared.rename(columns={price_column: "price"})
+    if prepared.empty:
+        return None, price_column, f"No usable dated positive price rows returned for {symbol}."
+    return prepared, price_column, None
+
+
+def _round_pct(value: float) -> float:
+    return round(float(value), 4)
+
+
+def _window_id(symbol: str, benchmark_symbol: str, start_date: Any, end_date: Any) -> str:
+    start = str(start_date)[:10].replace("-", "")
+    end = str(end_date)[:10].replace("-", "")
+    return f"{symbol.upper()}_vs_{benchmark_symbol.upper()}_{start}_{end}"
+
+
+def _parse_iso_date_param(value: str | None, *, param_name: str) -> tuple[date | None, str | None]:
+    if value is None:
+        return None, None
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None, f"{param_name} must be an ISO date in YYYY-MM-DD format."
+    try:
+        return date.fromisoformat(text), None
+    except ValueError:
+        return None, f"{param_name} must be a valid calendar date."
+
+
+def get_price_performance_windows(
+    symbol: str,
+    benchmark_symbol: str = "SPY",
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    lookback_years: int = 5,
+    window_days: int = 63,
+    max_windows: int = 5,
+    direction: Literal["both", "outperformance", "underperformance"] = "both",
+    use_cache: bool = True,
+) -> dict:
+    """
+    Return compact benchmark-relative price-performance windows.
+
+    This is the agent-friendly wrapper for historical-coincidence work. It
+    fetches dividend-adjusted historical prices for `symbol` and
+    `benchmark_symbol`, aligns common trading dates, computes rolling
+    `window_days` returns, and returns the largest non-overlapping relative
+    outperformance/underperformance windows. Use this instead of pulling raw
+    historical-price rows when a workflow needs 3-5 stock-move evidence windows.
+
+    Args:
+        symbol: Stock symbol to analyze.
+        benchmark_symbol: Benchmark symbol for relative returns (default SPY).
+        from_date: Optional start date (YYYY-MM-DD). Defaults to lookback_years ago.
+        to_date: Optional end date (YYYY-MM-DD). Defaults to today.
+        lookback_years: Default lookback when from_date is omitted.
+        window_days: Common-trading-day window length for each return slice.
+        max_windows: Maximum windows to return (1-10).
+        direction: both, outperformance, or underperformance.
+        use_cache: Whether to use FMP cache.
+
+    Returns:
+        dict with status, params, row counts, and `windows[]`. Each window has
+        start/end dates, stock return, benchmark return, relative return, and
+        direction.
+    """
+    normalized_symbol = str(symbol or "").strip().upper()
+    normalized_benchmark = str(benchmark_symbol or "").strip().upper()
+    params = {
+        "symbol": normalized_symbol,
+        "benchmark_symbol": normalized_benchmark,
+        "from_date": from_date,
+        "to_date": to_date,
+        "lookback_years": lookback_years,
+        "window_days": window_days,
+        "max_windows": max_windows,
+        "direction": direction,
+    }
+
+    if not normalized_symbol:
+        return _error_response("validation", "get_price_performance_windows requires symbol.", params=params)
+    if not normalized_benchmark:
+        return _error_response(
+            "validation",
+            "get_price_performance_windows requires benchmark_symbol.",
+            params=params,
+        )
+    if normalized_symbol == normalized_benchmark:
+        return _error_response(
+            "validation",
+            "symbol and benchmark_symbol must differ for relative-return windows.",
+            params=params,
+        )
+    try:
+        lookback_years = int(lookback_years)
+        window_days = int(window_days)
+        max_windows = int(max_windows)
+    except (TypeError, ValueError):
+        return _error_response(
+            "validation",
+            "lookback_years, window_days, and max_windows must be integers.",
+            params=params,
+        )
+    if lookback_years < 1 or lookback_years > 20:
+        return _error_response("validation", "lookback_years must be between 1 and 20.", params=params)
+    if window_days < 2 or window_days > 756:
+        return _error_response("validation", "window_days must be between 2 and 756.", params=params)
+    if max_windows < 1 or max_windows > 10:
+        return _error_response("validation", "max_windows must be between 1 and 10.", params=params)
+
+    direction_filter = str(direction or "both").strip().lower()
+    if direction_filter not in {"both", "outperformance", "underperformance"}:
+        return _error_response(
+            "validation",
+            "direction must be one of both, outperformance, or underperformance.",
+            params=params,
+        )
+
+    from_value, from_error = _parse_iso_date_param(from_date, param_name="from_date")
+    if from_error:
+        return _error_response("validation", from_error, params=params)
+    to_value, to_error = _parse_iso_date_param(to_date, param_name="to_date")
+    if to_error:
+        return _error_response("validation", to_error, params=params)
+    if from_value is None:
+        from_value = date.today() - timedelta(days=365 * lookback_years)
+    if to_value is None:
+        to_value = date.today()
+    if from_value > to_value:
+        return _error_response("validation", "from_date must be on or before to_date.", params=params)
+
+    from_date = from_value.isoformat()
+    to_date = to_value.isoformat()
+    params["from_date"] = from_date
+    params["to_date"] = to_date
+
+    try:
+        client = get_client()
+        fetch_params = {"from_date": from_date, "to_date": to_date}
+        symbol_frame = client.fetch(
+            "historical_price_adjusted",
+            symbol=normalized_symbol,
+            use_cache=use_cache,
+            **fetch_params,
+        )
+        benchmark_frame = client.fetch(
+            "historical_price_adjusted",
+            symbol=normalized_benchmark,
+            use_cache=use_cache,
+            **fetch_params,
+        )
+
+        symbol_prices, symbol_price_column, symbol_error = _prepare_price_frame(
+            symbol_frame,
+            symbol=normalized_symbol,
+        )
+        if symbol_error:
+            return _error_response("empty_data", symbol_error, "historical_price_adjusted", params)
+        benchmark_prices, benchmark_price_column, benchmark_error = _prepare_price_frame(
+            benchmark_frame,
+            symbol=normalized_benchmark,
+        )
+        if benchmark_error:
+            return _error_response("empty_data", benchmark_error, "historical_price_adjusted", params)
+
+        merged = symbol_prices.merge(
+            benchmark_prices,
+            on="date",
+            suffixes=("_symbol", "_benchmark"),
+        ).sort_values("date")
+        if len(merged) <= window_days:
+            return _error_response(
+                "empty_data",
+                (
+                    f"Only {len(merged)} common trading dates were available; "
+                    f"need more than window_days={window_days}."
+                ),
+                "historical_price_adjusted",
+                params,
+            )
+
+        candidates: list[dict[str, Any]] = []
+        for start_idx in range(0, len(merged) - window_days):
+            end_idx = start_idx + window_days
+            start_row = merged.iloc[start_idx]
+            end_row = merged.iloc[end_idx]
+            symbol_start = float(start_row["price_symbol"])
+            symbol_end = float(end_row["price_symbol"])
+            benchmark_start = float(start_row["price_benchmark"])
+            benchmark_end = float(end_row["price_benchmark"])
+            if symbol_start <= 0 or benchmark_start <= 0:
+                continue
+            symbol_return = ((symbol_end / symbol_start) - 1.0) * 100.0
+            benchmark_return = ((benchmark_end / benchmark_start) - 1.0) * 100.0
+            relative_return = symbol_return - benchmark_return
+            if direction_filter == "outperformance" and relative_return <= 0:
+                continue
+            if direction_filter == "underperformance" and relative_return >= 0:
+                continue
+
+            candidates.append(
+                {
+                    "start_idx": start_idx,
+                    "end_idx": end_idx,
+                    "window_id": _window_id(
+                        normalized_symbol,
+                        normalized_benchmark,
+                        start_row["date"].date(),
+                        end_row["date"].date(),
+                    ),
+                    "start_date": start_row["date"].date().isoformat(),
+                    "end_date": end_row["date"].date().isoformat(),
+                    "trading_days": end_idx - start_idx,
+                    "symbol_start_price": round(symbol_start, 4),
+                    "symbol_end_price": round(symbol_end, 4),
+                    "benchmark_start_price": round(benchmark_start, 4),
+                    "benchmark_end_price": round(benchmark_end, 4),
+                    "symbol_return_pct": _round_pct(symbol_return),
+                    "benchmark_return_pct": _round_pct(benchmark_return),
+                    "relative_return_pct": _round_pct(relative_return),
+                    "direction": "outperformance" if relative_return >= 0 else "underperformance",
+                }
+            )
+
+        selected: list[dict[str, Any]] = []
+        for candidate in sorted(candidates, key=lambda item: abs(item["relative_return_pct"]), reverse=True):
+            overlaps = any(
+                not (
+                    candidate["end_idx"] < existing["start_idx"]
+                    or candidate["start_idx"] > existing["end_idx"]
+                )
+                for existing in selected
+            )
+            if overlaps:
+                continue
+            selected.append(candidate)
+            if len(selected) >= max_windows:
+                break
+
+        windows = []
+        for rank, candidate in enumerate(selected, start=1):
+            window = {
+                key: value
+                for key, value in candidate.items()
+                if key not in {"start_idx", "end_idx"}
+            }
+            window["magnitude_rank"] = rank
+            windows.append(window)
+
+        return {
+            "status": "success",
+            "symbol": normalized_symbol,
+            "benchmark_symbol": normalized_benchmark,
+            "params": params,
+            "endpoint": "historical_price_adjusted",
+            "price_fields": {
+                "symbol": symbol_price_column,
+                "benchmark": benchmark_price_column,
+            },
+            "row_count": {
+                "symbol": int(len(symbol_prices)),
+                "benchmark": int(len(benchmark_prices)),
+                "aligned": int(len(merged)),
+                "candidate_windows": int(len(candidates)),
+            },
+            "selection": {
+                "method": "largest absolute benchmark-relative returns, non-overlapping windows",
+                "requested_max_windows": max_windows,
+                "returned_windows": len(windows),
+            },
+            "windows": windows,
+            "source": {
+                "provider": "fmp",
+                "endpoint": "historical_price_adjusted",
+                "basis": "dividend_adjusted_close_relative_to_benchmark",
+            },
+        }
+
+    except Exception as e:
+        return _map_exception_to_error(e, "historical_price_adjusted", params)
+
+
 def fmp_search(query: str, limit: int = 10, exchange: Optional[str] = None) -> dict:
     """
     Search for companies by name or ticker.
@@ -241,7 +563,22 @@ def fmp_search(query: str, limit: int = 10, exchange: Optional[str] = None) -> d
         return _map_exception_to_error(e, "search", params)
 
 
-def fmp_profile(symbol: str) -> dict:
+def _resolve_symbol_alias(symbol: Optional[str], ticker: Optional[str]) -> str:
+    normalized_symbol = str(symbol or "").strip()
+    normalized_ticker = str(ticker or "").strip()
+    if (
+        normalized_symbol
+        and normalized_ticker
+        and normalized_symbol.upper() != normalized_ticker.upper()
+    ):
+        raise FMPValidationError("Provide only one ticker: symbol and ticker disagree")
+    resolved = normalized_symbol or normalized_ticker
+    if not resolved:
+        raise FMPValidationError("fmp_profile requires symbol or ticker")
+    return resolved
+
+
+def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> dict:
     """
     Get detailed company profile as a current FMP /profile snapshot.
 
@@ -252,7 +589,8 @@ def fmp_profile(symbol: str) -> dict:
     `date` field on each row.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT")
+        symbol: Stock symbol (e.g., "AAPL", "MSFT").
+        ticker: Alias for symbol, accepted for consistency with other tools.
 
     Returns:
         dict with:
@@ -261,25 +599,26 @@ def fmp_profile(symbol: str) -> dict:
             - profile: Company profile data (name, sector, industry, description, etc.)
 
     Examples:
-        fmp_profile("AAPL")
-        fmp_profile("MSFT")
+        fmp_profile(symbol="AAPL")
+        fmp_profile(ticker="MSFT")
     """
     try:
+        resolved_symbol = _resolve_symbol_alias(symbol, ticker)
         client = get_client()
-        df = client.fetch("profile", symbol=symbol)
+        df = client.fetch("profile", symbol=resolved_symbol)
         records = df.to_dict(orient="records")
 
         # Profile returns a list with single item
-        profile = records[0] if records else {}
+        profile = add_beta_warning(records[0]) if records else {}
 
         return {
             "status": "success",
-            "symbol": symbol,
+            "symbol": resolved_symbol,
             "profile": profile,
         }
 
     except Exception as e:
-        return _map_exception_to_error(e, "profile", {"symbol": symbol})
+        return _map_exception_to_error(e, "profile", {"symbol": symbol, "ticker": ticker})
 
 
 def _positive_float(value: Any) -> Optional[float]:

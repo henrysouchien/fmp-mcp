@@ -218,12 +218,21 @@ register_endpoint(
     FMPEndpoint(
         name="historical_price_eod",
         path="/historical-price-eod/full",
-        description="End-of-day historical prices (open, high, low, close, volume)",
+        description=(
+            "End-of-day historical prices (open, high, low, close, volume). "
+            "Also supports FMP FX pair symbols such as USDTWD for historical "
+            "foreign-exchange close data."
+        ),
         fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#historical-stock-price-end-of-day",
         category="prices",
         api_version="stable",
         params=[
-            EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
+            EndpointParam(
+                "symbol",
+                ParamType.STRING,
+                required=True,
+                description="Stock or FX pair symbol, e.g. AAPL or USDTWD",
+            ),
             EndpointParam("from", ParamType.DATE, description="Start date (YYYY-MM-DD)"),
             EndpointParam("to", ParamType.DATE, description="End date (YYYY-MM-DD)"),
             EndpointParam("serietype", ParamType.STRING, default="line", description="Series type"),
@@ -407,6 +416,30 @@ register_endpoint(
         path="/key-metrics",
         description="Key financial metrics (P/E, P/B, ROE, debt ratios)",
         fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#company-key-metrics",
+        category="fundamentals",
+        api_version="stable",
+        params=[
+            EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
+            EndpointParam(
+                "period",
+                ParamType.ENUM,
+                default="annual",
+                enum_values=["annual", "quarter"],
+                description="Reporting period",
+            ),
+            EndpointParam("limit", ParamType.INTEGER, default=10, description="Number of periods"),
+        ],
+        cache_dir="cache/fundamentals",
+        cache_refresh=CacheRefresh.HASH_ONLY,  # Historical filings don't change
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="ratios",
+        path="/ratios",
+        description="Financial ratios (margins, growth, returns, leverage)",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#financial-ratios",
         category="fundamentals",
         api_version="stable",
         params=[
@@ -1139,8 +1172,8 @@ register_endpoint(
         response_type="list",
         params=[
             EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
-            EndpointParam("year", ParamType.INTEGER, description="Filing year"),
-            EndpointParam("quarter", ParamType.INTEGER, description="Filing quarter (1-4)"),
+            EndpointParam("year", ParamType.INTEGER, required=True, description="Filing year"),
+            EndpointParam("quarter", ParamType.INTEGER, required=True, description="Filing quarter (1-4)"),
             EndpointParam("page", ParamType.INTEGER, default=0, description="Page number"),
             EndpointParam("limit", ParamType.INTEGER, default=20, description="Max rows per page"),
         ],
@@ -1161,8 +1194,8 @@ register_endpoint(
         response_type="list",
         params=[
             EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
-            EndpointParam("year", ParamType.INTEGER, description="Filing year"),
-            EndpointParam("quarter", ParamType.INTEGER, description="Filing quarter (1-4)"),
+            EndpointParam("year", ParamType.INTEGER, required=True, description="Filing year"),
+            EndpointParam("quarter", ParamType.INTEGER, required=True, description="Filing quarter (1-4)"),
         ],
         cache_dir="cache/institutional",
         cache_refresh=CacheRefresh.TTL,

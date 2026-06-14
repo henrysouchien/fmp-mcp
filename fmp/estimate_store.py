@@ -28,6 +28,10 @@ from psycopg2.pool import SimpleConnectionPool
 
 
 _DEFAULT_DATABASE_URL = "postgresql://postgres@localhost:5432/fmp_data_db"
+_LEGACY_DATABASE_URL_ENV = "FMP_DATA_DATABASE_URL"
+_READ_DATABASE_URL_ENV = "FMP_DATA_READ_DATABASE_URL"
+_WRITE_DATABASE_URL_ENV = "FMP_DATA_WRITE_DATABASE_URL"
+_ENSURE_SCHEMA_ENV = "FMP_DATA_ENSURE_SCHEMA"
 _SCHEMA_PATH = Path(__file__).resolve().parent / "scripts" / "create_fmp_data_schema.sql"
 
 
@@ -68,6 +72,51 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
     return [items[i: i + size] for i in range(0, len(items), size)]
 
 
+def _non_empty(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _parse_bool(value: str | None, *, default: bool) -> bool:
+    normalized = _non_empty(value).lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def resolve_estimate_database_url(
+    database_url: str | None = None,
+    *,
+    read_only: bool = False,
+) -> str:
+    explicit = _non_empty(database_url)
+    if explicit:
+        return explicit
+
+    role_env = _READ_DATABASE_URL_ENV if read_only else _WRITE_DATABASE_URL_ENV
+    role_url = _non_empty(os.getenv(role_env))
+    if role_url:
+        return role_url
+
+    legacy_url = _non_empty(os.getenv(_LEGACY_DATABASE_URL_ENV))
+    if legacy_url:
+        return legacy_url
+
+    return _DEFAULT_DATABASE_URL
+
+
+def has_configured_estimate_database_url(*, read_only: bool = False) -> bool:
+    role_env = _READ_DATABASE_URL_ENV if read_only else _WRITE_DATABASE_URL_ENV
+    return bool(_non_empty(os.getenv(role_env)) or _non_empty(os.getenv(_LEGACY_DATABASE_URL_ENV)))
+
+
+def should_ensure_estimate_schema(ensure_schema: bool | None = None) -> bool:
+    if ensure_schema is not None:
+        return ensure_schema
+    return _parse_bool(os.getenv(_ENSURE_SCHEMA_ENV), default=True)
+
+
 def _parse_iso_date(value: Any) -> date | None:
     """Best-effort ISO date parsing for fiscal_date fields."""
     if value in (None, ""):
@@ -88,9 +137,15 @@ class EstimateStore:
 
     _reader_pools: ClassVar[dict[str, SimpleConnectionPool]] = {}
 
-    def __init__(self, database_url: str | None = None, read_only: bool = False):
-        self.database_url = (database_url or os.getenv("FMP_DATA_DATABASE_URL") or _DEFAULT_DATABASE_URL).strip()
+    def __init__(
+        self,
+        database_url: str | None = None,
+        read_only: bool = False,
+        ensure_schema: bool | None = None,
+    ):
+        self.database_url = resolve_estimate_database_url(database_url, read_only=read_only)
         self.read_only = read_only
+        self.ensure_schema = False if read_only else should_ensure_estimate_schema(ensure_schema)
         self._available = True
         self.conn: PsycopgConnection | None = None
         self._reader_pool: SimpleConnectionPool | None = None
@@ -105,7 +160,8 @@ class EstimateStore:
                 self.conn = psycopg2.connect(self.database_url, cursor_factory=RealDictCursor)
                 self.conn.autocommit = False
                 self._apply_session_settings(self.conn, read_only=False)
-                self._ensure_schema()
+                if self.ensure_schema:
+                    self._ensure_schema()
         except OperationalError:
             if self.read_only:
                 self._available = False

@@ -798,9 +798,11 @@ def _build_transcript_metadata(
     filing_date: str,
     company_name: object,
 ) -> dict:
+    cik = _resolve_transcript_cik(symbol, filing_date)
     return {
         "document_id": f"fmp_transcripts:{symbol}_{fiscal_period}",
         "ticker": symbol,
+        "cik": cik,
         "company_name": str(company_name) if company_name else None,
         "source": "fmp_transcripts",
         "form_type": "TRANSCRIPT",
@@ -817,6 +819,31 @@ def _build_transcript_metadata(
         "extraction_model": None,
         "extraction_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _resolve_transcript_cik(symbol: str, filing_date: str) -> str | None:
+    if not _is_current_transcript_filing_date(filing_date):
+        return None
+
+    try:
+        from core.corpus.validation import resolve_operating_cik
+    except ImportError:
+        return None
+
+    try:
+        return resolve_operating_cik(symbol)
+    except Exception:
+        return None
+
+
+def _is_current_transcript_filing_date(filing_date: str) -> bool:
+    try:
+        filing_day = datetime.strptime(str(filing_date)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return False
+
+    days_from_today = abs((datetime.now(UTC).date() - filing_day).days)
+    return days_from_today <= 366
 
 
 def _transcript_extraction_pipeline() -> str:
@@ -839,6 +866,9 @@ def _is_corpus_ingest_candidate(
     filter_speaker_raw: str | None,
     is_empty: bool,
 ) -> bool:
+    # Only complete, unfiltered transcripts are corpus documents with canonical
+    # `fmp_transcripts:` identity. Filtered output="file" results are scratch
+    # exports for agent reading and may keep a readable hash-suffixed filename.
     return (
         section_raw == "all"
         and not filter_role_raw
@@ -865,7 +895,7 @@ def _ingest_transcript_result(result: dict) -> Path:
         ingest_result = ingest_raw(
             body,
             metadata,
-            Path(corpus_root_raw).expanduser().resolve(),
+            Path(corpus_root_raw).expanduser(),
             db,
         )
     finally:

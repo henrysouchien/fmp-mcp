@@ -17,6 +17,7 @@ import sys
 from typing import Optional, Literal
 
 from ..client import FMPClient
+from .beta_guard import BETA_FILTER_WARNING, add_beta_warning
 
 
 # === Constants ===
@@ -43,7 +44,7 @@ _SCREENER_PASSTHROUGH = ["sector", "industry", "country", "exchange", "limit"]
 # Fields to extract for summary format
 _SUMMARY_FIELDS = [
     "symbol", "companyName", "sector", "industry",
-    "marketCap", "price", "beta", "volume",
+    "marketCap", "price", "beta", "beta_warning", "volume",
     "lastAnnualDividend", "exchange", "country",
 ]
 
@@ -239,18 +240,26 @@ def screen_stocks(
         if not isinstance(results, list):
             results = [results] if results else []
 
+        results = [add_beta_warning(item) for item in results if isinstance(item, dict)]
+
         # Build filters_applied for context
         filters_applied = _build_filters_applied(**filter_params)
+        warnings = []
+        if beta_min is not None or beta_max is not None:
+            warnings.append(BETA_FILTER_WARNING)
 
         # Handle empty results
         if not results:
-            return {
+            response = {
                 "status": "success",
                 "result_count": 0,
                 "filters_applied": filters_applied,
                 "results": [],
                 "note": "No stocks matched your criteria. Try broadening your filters.",
             }
+            if warnings:
+                response["warnings"] = warnings
+            return response
 
         # Format response
         if format == "summary":
@@ -258,12 +267,15 @@ def screen_stocks(
         else:
             formatted_results = results
 
-        return {
+        response = {
             "status": "success",
             "result_count": len(formatted_results),
             "filters_applied": filters_applied,
             "results": formatted_results,
         }
+        if warnings:
+            response["warnings"] = warnings
+        return response
 
     except Exception as e:
         return {

@@ -4,6 +4,7 @@ MCP Tool: get_institutional_ownership
 Institutional ownership analytics for a single symbol.
 """
 
+import datetime as dt
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal, Optional
@@ -59,6 +60,38 @@ def _add_source_status(
     if as_of:
         entry["as_of"] = as_of
     source_status[section] = entry
+
+
+def _latest_due_13f_quarter(as_of: Optional[dt.date] = None) -> tuple[int, int]:
+    """Return the latest 13F quarter whose 45-day filing deadline has passed."""
+    as_of = as_of or dt.date.today()
+    quarter_ends = {
+        1: (3, 31),
+        2: (6, 30),
+        3: (9, 30),
+        4: (12, 31),
+    }
+    for year in range(as_of.year, as_of.year - 3, -1):
+        for quarter in (4, 3, 2, 1):
+            month, day = quarter_ends[quarter]
+            due_date = dt.date(year, month, day) + dt.timedelta(days=45)
+            if due_date <= as_of:
+                return year, quarter
+    raise ValueError(f"No due 13F quarter found for {as_of.isoformat()}")
+
+
+def _resolve_filing_period(year: Optional[int], quarter: Optional[int]) -> tuple[int, int]:
+    """Resolve optional tool period args into an explicit filing year/quarter."""
+    if year is None and quarter is None:
+        return _latest_due_13f_quarter()
+    if year is None or quarter is None:
+        raise ValueError("year and quarter must be provided together")
+
+    resolved_year = int(year)
+    resolved_quarter = int(quarter)
+    if resolved_quarter not in (1, 2, 3, 4):
+        raise ValueError("quarter must be 1-4")
+    return resolved_year, resolved_quarter
 
 
 def _safe_fetch_records(
@@ -140,8 +173,8 @@ def get_institutional_ownership(
 
     Args:
         symbol: Stock symbol (e.g., "AAPL").
-        year: Optional filing year.
-        quarter: Optional filing quarter (1-4).
+        year: Optional filing year. Defaults with quarter to latest due 13F period.
+        quarter: Optional filing quarter (1-4). Defaults with year to latest due 13F period.
         limit: Max holder rows to return in summary mode.
         format: "summary" for normalized top holders, "full" for raw records.
         use_cache: Use cached FMP data when available.
@@ -160,6 +193,7 @@ def get_institutional_ownership(
             }
 
         limit = max(1, min(100, int(limit)))
+        resolved_year, resolved_quarter = _resolve_filing_period(year, quarter)
 
         client = FMPClient()
         source_status: dict[str, dict] = {}
@@ -175,8 +209,8 @@ def get_institutional_ownership(
                 "institutional_holders",
                 {
                     "symbol": normalized_symbol,
-                    "year": year,
-                    "quarter": quarter,
+                    "year": resolved_year,
+                    "quarter": resolved_quarter,
                     "limit": limit,
                 },
                 "institutional_holders_v3",  # v3 fallback for 402
@@ -185,8 +219,8 @@ def get_institutional_ownership(
                 "institutional_positions_summary",
                 {
                     "symbol": normalized_symbol,
-                    "year": year,
-                    "quarter": quarter,
+                    "year": resolved_year,
+                    "quarter": resolved_quarter,
                 },
                 None,  # no v3 fallback
             ),
@@ -223,10 +257,10 @@ def get_institutional_ownership(
                     _add_source_status(source_status, section, False, 0)
                     warnings.append(f"{section}: {result['error']}")
 
-        if all(not source_status[section]["ok"] for section in fetch_specs):
+        if not source_status["holders"]["ok"]:
             return {
                 "status": "error",
-                "error": "Failed to fetch all requested institutional ownership sources.",
+                "error": "Failed to fetch required institutional holders source.",
                 "symbol": normalized_symbol,
                 "source_status": source_status,
                 "warnings": warnings,
@@ -245,6 +279,10 @@ def get_institutional_ownership(
         return {
             "status": "success",
             "symbol": normalized_symbol,
+            "filing_period": {
+                "year": resolved_year,
+                "quarter": resolved_quarter,
+            },
             "source_status": source_status,
             "warnings": warnings,
             "holder_count": len(holders),

@@ -52,7 +52,7 @@ Write and execute a Python script.
 | Endpoint | Use For | Key Params |
 |----------|---------|------------|
 | `historical_price_adjusted` | Stock returns, drawdowns | `symbol`, `from`, `to` |
-| `historical_price_eod` | Raw OHLCV prices | `symbol`, `from`, `to` |
+| `historical_price_eod` | Raw OHLCV prices and historical FX pair closes, e.g. `USDTWD` for USD/TWD | `symbol`, `from`, `to` |
 | `treasury_rates` | Yield curve, rates | `from`, `to` |
 | `income_statement` | Revenue, earnings, margins | `symbol`, `period`, `limit` |
 | `balance_sheet` | Assets, debt, equity | `symbol`, `period`, `limit` |

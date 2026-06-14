@@ -215,10 +215,10 @@ def get_insider_trades(
                     _add_source_status(source_status, section, False, 0)
                     warnings.append(f"{section}: {result['error']}")
 
-        if all(not source_status[section]["ok"] for section in fetch_specs):
+        if not source_status["trades"]["ok"]:
             return {
                 "status": "error",
-                "error": "Failed to fetch all requested insider trading sources.",
+                "error": "Failed to fetch required insider trades source.",
                 "symbol": normalized_symbol,
                 "source_status": source_status,
                 "warnings": warnings,

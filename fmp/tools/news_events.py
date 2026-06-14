@@ -57,6 +57,8 @@ _CALENDAR_ENDPOINTS = {
     "ipos": "ipos_calendar",
 }
 
+_MAX_CALENDAR_WINDOW_DAYS = 90
+
 
 def _clean_record(record: dict) -> dict:
     """Normalize raw records so cached DataFrame paths preserve None semantics."""
@@ -120,17 +122,29 @@ def _fetch_calendar(
     use_cache: bool = True,
 ) -> list[dict]:
     """Fetch a single calendar endpoint, returning list of events."""
-    try:
-        return _fetch_records(
-            fmp,
-            endpoint_name,
-            from_date=from_date,
-            to_date=to_date,
-            use_cache=use_cache,
+    return _fetch_records(
+        fmp,
+        endpoint_name,
+        from_date=from_date,
+        to_date=to_date,
+        use_cache=use_cache,
+    )
+
+
+def _calendar_windows(dt_from: datetime, dt_to: datetime) -> list[tuple[str, str]]:
+    """Split a requested calendar range into FMP-compatible windows."""
+    windows = []
+    window_start = dt_from
+    while window_start <= dt_to:
+        window_end = min(window_start + timedelta(days=_MAX_CALENDAR_WINDOW_DAYS), dt_to)
+        windows.append(
+            (
+                window_start.strftime("%Y-%m-%d"),
+                window_end.strftime("%Y-%m-%d"),
+            )
         )
-    except Exception:
-        # Individual calendar fetch failure should not break "all" mode
-        return []
+        window_start = window_end + timedelta(days=1)
+    return windows
 
 
 def _summarize_event(event: dict, event_type: str) -> dict:
@@ -275,11 +289,6 @@ def get_events_calendar(
         try:
             dt_from = datetime.strptime(from_date, "%Y-%m-%d")
             dt_to = datetime.strptime(to_date, "%Y-%m-%d")
-            if (dt_to - dt_from).days > 90:
-                return {
-                    "status": "error",
-                    "error": "Date range exceeds 90-day maximum. Narrow the from_date/to_date window.",
-                }
             if dt_to < dt_from:
                 return {
                     "status": "error",
@@ -290,6 +299,7 @@ def get_events_calendar(
                 "status": "error",
                 "error": "Invalid date format. Use YYYY-MM-DD.",
             }
+        date_windows = _calendar_windows(dt_from, dt_to)
 
         if event_type == "all" and not symbols and limit is None:
             limit = 20
@@ -307,28 +317,30 @@ def get_events_calendar(
 
         if event_type == "all":
             for etype, endpoint_name in _CALENDAR_ENDPOINTS.items():
+                for window_from, window_to in date_windows:
+                    events = _fetch_calendar(
+                        fmp,
+                        endpoint_name,
+                        window_from,
+                        window_to,
+                        use_cache=use_cache,
+                    )
+                    for evt in events:
+                        evt["_event_type"] = etype
+                    all_events.extend(events)
+        else:
+            endpoint_name = _CALENDAR_ENDPOINTS[event_type]
+            for window_from, window_to in date_windows:
                 events = _fetch_calendar(
                     fmp,
                     endpoint_name,
-                    from_date,
-                    to_date,
+                    window_from,
+                    window_to,
                     use_cache=use_cache,
                 )
                 for evt in events:
-                    evt["_event_type"] = etype
+                    evt["_event_type"] = event_type
                 all_events.extend(events)
-        else:
-            endpoint_name = _CALENDAR_ENDPOINTS[event_type]
-            events = _fetch_calendar(
-                fmp,
-                endpoint_name,
-                from_date,
-                to_date,
-                use_cache=use_cache,
-            )
-            for evt in events:
-                evt["_event_type"] = event_type
-            all_events = events
 
         if symbol_filter:
             all_events = [
@@ -358,6 +370,7 @@ def get_events_calendar(
             "event_type": event_type,
             "from_date": from_date,
             "to_date": to_date,
+            "date_window_count": len(date_windows),
             "event_count": len(formatted_events),
             "events": formatted_events,
         }

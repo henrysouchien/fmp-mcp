@@ -147,6 +147,12 @@ def get_technical_analysis(
             "indicators_included": sorted(included),
             "indicators_failed": sorted(failed),
         }
+        if failed:
+            response["status"] = "error"
+            response["error"] = (
+                "Failed to fetch requested technical indicator(s): "
+                f"{', '.join(sorted(failed))}."
+            )
 
         if format == "full":
             time_series = _build_time_series(results, derived, periods, last_n=last_n)

@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-estimates = ["psycopg2-binary"]
+estimates = ["psycopg2-binary>=2.9,<3"]
 
 [project.scripts]
 fmp-mcp = "fmp.server:main"

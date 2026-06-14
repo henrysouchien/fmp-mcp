@@ -1026,6 +1026,14 @@ def get_stock_fundamentals(
 
             response["warnings"].extend(section_warnings)
 
+        if response["sections_failed"]:
+            failed_sections = ", ".join(response["sections_failed"])
+            response["status"] = "error"
+            response["error"] = (
+                "Failed to build requested stock fundamental section(s): "
+                f"{failed_sections}."
+            )
+
         return response
 
     except Exception as exc:

@@ -9,6 +9,7 @@ from .fmp_core import (
     fmp_market_cap_check,
     fmp_profile,
     fmp_search,
+    get_price_performance_windows,
 )
 from .insider import get_insider_trades
 from .institutional import get_institutional_ownership
@@ -26,6 +27,7 @@ __all__ = [
     "fmp_market_cap_check",
     "fmp_list_endpoints",
     "fmp_describe",
+    "get_price_performance_windows",
     "screen_stocks",
     "compare_peers",
     "get_economic_data",

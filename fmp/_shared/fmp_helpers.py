@@ -178,57 +178,43 @@ def compute_forward_ev_sales(
 
 def _get_last_reported_fiscal_date(fmp_client: Any, ticker: str) -> str | None:
     """Return the most recent reported fiscal period end date for a ticker."""
-    try:
-        income_df = fmp_client.fetch(
-            "income_statement",
-            symbol=ticker,
-            period="quarter",
-            limit=1,
-        )
-        income_record = first_dataframe_record(income_df)
-        raw_date = income_record.get("date")
-        return str(raw_date)[:10] if raw_date else None
-    except Exception:
-        return None
+    income_df = fmp_client.fetch(
+        "income_statement",
+        symbol=ticker,
+        period="quarter",
+        limit=1,
+    )
+    income_record = first_dataframe_record(income_df)
+    raw_date = income_record.get("date")
+    return str(raw_date)[:10] if raw_date else None
 
 
 def fetch_forward_pe(fmp_client: Any, ticker: str, current_price: Any) -> dict[str, Any]:
-    """Fetch analyst data and compute forward P/E with graceful fallback."""
-    fallback = {
-        "forward_pe": None,
-        "ntm_eps": None,
-        "pe_source": "unavailable",
-        "analyst_count": None,
-        "fiscal_period": None,
-    }
-
-    try:
-        last_reported_fiscal_date = _get_last_reported_fiscal_date(fmp_client, ticker)
-        estimates_df = fmp_client.fetch(
-            "analyst_estimates",
-            symbol=ticker,
-            period="annual",
-            limit=4,
+    """Fetch analyst data and compute forward P/E."""
+    last_reported_fiscal_date = _get_last_reported_fiscal_date(fmp_client, ticker)
+    estimates_df = fmp_client.fetch(
+        "analyst_estimates",
+        symbol=ticker,
+        period="annual",
+        limit=4,
+    )
+    if estimates_df is None:
+        estimate_records: list[dict[str, Any]] = []
+    elif hasattr(estimates_df, "empty"):
+        estimate_records = (
+            estimates_df.to_dict("records")
+            if not estimates_df.empty
+            else []
         )
-        if estimates_df is None:
-            estimate_records: list[dict[str, Any]] = []
-        elif hasattr(estimates_df, "empty"):
-            estimate_records = (
-                estimates_df.to_dict("records")
-                if not estimates_df.empty
-                else []
-            )
-        elif isinstance(estimates_df, list):
-            estimate_records = [row for row in estimates_df if isinstance(row, dict)]
-        elif isinstance(estimates_df, dict):
-            estimate_records = [estimates_df]
-        else:
-            estimate_records = []
+    elif isinstance(estimates_df, list):
+        estimate_records = [row for row in estimates_df if isinstance(row, dict)]
+    elif isinstance(estimates_df, dict):
+        estimate_records = [estimates_df]
+    else:
+        estimate_records = []
 
-        return compute_forward_pe(
-            current_price,
-            estimate_records,
-            last_reported_fiscal_date=last_reported_fiscal_date,
-        )
-    except Exception:
-        return fallback
+    return compute_forward_pe(
+        current_price,
+        estimate_records,
+        last_reported_fiscal_date=last_reported_fiscal_date,
+    )
