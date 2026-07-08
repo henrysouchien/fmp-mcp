@@ -3,6 +3,16 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.4.1] — 2026-07-08
+
+### Fixed
+- **`fmp/tools/_helpers.py` no longer imports `utils.numeric`** — `safe_float` / `safe_float_or_none` are vendored directly into the module. The 0.4.0 wheel was import-broken outside the monorepo (`ModuleNotFoundError: No module named 'utils'` on `import fmp.server`) because `utils.numeric` is not in the sync script's vendoring whitelist and itself re-exports from the non-vendored `portfolio_math` package.
+
+## [0.4.0] — 2026-07-07
+
+### Changed
+- Expanded market, transcripts, insider, institutional, and ETF/funds tools; new `fmp/registry.py` manifest dispatcher. (Published without a changelog entry; this summary reconstructed from the sync diff. Import-broken outside the monorepo — fixed in 0.4.1.)
+
 ## [0.3.3] — 2026-04-30
 
 ### Fixed

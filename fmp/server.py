@@ -40,9 +40,15 @@ while _p.parent != _p:
 del _p, _bootstrap_sys, _BootstrapPath
 # --- end auto-injected ---
 
-import bootstrap_env
+# Monorepo-only env bootstrap; the standalone fmp-mcp wheel has no
+# bootstrap_env module and takes FMP_API_KEY from the process environment.
+try:
+    import bootstrap_env
+except ImportError:
+    bootstrap_env = None
 
-bootstrap_env.bootstrap(required=["FMP_API_KEY"])
+if bootstrap_env is not None:
+    bootstrap_env.bootstrap(required=["FMP_API_KEY"])
 
 from fastmcp import FastMCP
 
