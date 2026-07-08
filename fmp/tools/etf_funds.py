@@ -4,6 +4,8 @@ MCP Tool: get_etf_holdings
 ETF/fund composition snapshot across holdings, sectors, countries, and metadata.
 """
 
+from ._helpers import safe_float_or_none as _safe_float
+
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -15,7 +17,14 @@ from ..exceptions import FMPEmptyResponseError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
 
 
-ETF_INCLUDE_OPTIONS = ["holdings", "sectors", "countries", "info", "exposure", "disclosure"]
+ETF_INCLUDE_OPTIONS = [
+    "holdings",
+    "sectors",
+    "countries",
+    "info",
+    "exposure",
+    "disclosure",
+]
 
 _SECTION_TO_ENDPOINT = {
     "holdings": "etf_holdings",
@@ -32,20 +41,6 @@ _SECTION_V3_FALLBACK = {
 }
 
 
-def _safe_float(value):
-    """Parse numeric values with a None fallback."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.strip().replace("%", "").replace(",", "")
-        if not value:
-            return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _first_non_null(record: dict, keys: list[str]):
     """Return first non-null value among candidate keys."""
     for key in keys:
@@ -60,7 +55,14 @@ def _extract_as_of(records: list[dict]) -> Optional[str]:
     for record in records:
         value = _first_non_null(
             record,
-            ["timestamp", "lastUpdated", "date", "reportDate", "acceptedDate", "filingDate"],
+            [
+                "timestamp",
+                "lastUpdated",
+                "date",
+                "reportDate",
+                "acceptedDate",
+                "filingDate",
+            ],
         )
         if value is not None:
             return str(value)
@@ -116,18 +118,50 @@ def _safe_fetch_records(
         return {"ok": False, "data": [], "error": str(e)}
 
 
-def _summarize_holdings(records: list[dict], limit: int) -> list[dict]:
+def _holding_symbol(record: dict, container_symbol: str | None = None) -> str:
+    direct_symbol = _first_non_null(record, ["assetSymbol", "ticker"])
+    if direct_symbol is not None:
+        return str(direct_symbol)
+
+    raw_symbol = _first_non_null(record, ["symbol"])
+    if raw_symbol is not None:
+        normalized_raw = str(raw_symbol).upper().strip()
+        if container_symbol and normalized_raw == container_symbol:
+            return str(_first_non_null(record, ["asset"]) or "")
+        return str(raw_symbol)
+
+    if container_symbol:
+        return str(_first_non_null(record, ["asset"]) or "")
+    return ""
+
+
+def _summarize_holdings(
+    records: list[dict],
+    limit: int,
+    *,
+    container_symbol: str | None = None,
+) -> list[dict]:
     """Summarize top ETF holdings."""
+    normalized_container_symbol = str(container_symbol or "").upper().strip() or None
     holdings = []
     for record in records:
-        holdings.append({
-            "asset": _first_non_null(record, ["asset", "holding", "name", "securityName"]) or "",
-            "symbol": _first_non_null(record, ["symbol", "assetSymbol", "ticker"]) or "",
-            "weight_pct": _safe_float(
-                _first_non_null(record, ["weightPercentage", "weight", "allocation"])
-            ),
-            "shares": _safe_float(_first_non_null(record, ["sharesNumber", "shares"])),
-        })
+        holdings.append(
+            {
+                "asset": _first_non_null(
+                    record, ["asset", "holding", "name", "securityName"]
+                )
+                or "",
+                "symbol": _holding_symbol(record, normalized_container_symbol),
+                "weight_pct": _safe_float(
+                    _first_non_null(
+                        record, ["weightPercentage", "weight", "allocation"]
+                    )
+                ),
+                "shares": _safe_float(
+                    _first_non_null(record, ["sharesNumber", "shares"])
+                ),
+            }
+        )
 
     holdings.sort(
         key=lambda h: (
@@ -143,12 +177,16 @@ def _summarize_weightings(records: list[dict], key_names: list[str]) -> list[dic
     rows = []
     for record in records:
         name = _first_non_null(record, key_names) or ""
-        rows.append({
-            "name": name,
-            "weight_pct": _safe_float(
-                _first_non_null(record, ["weightPercentage", "weight", "allocation"])
-            ),
-        })
+        rows.append(
+            {
+                "name": name,
+                "weight_pct": _safe_float(
+                    _first_non_null(
+                        record, ["weightPercentage", "weight", "allocation"]
+                    )
+                ),
+            }
+        )
 
     rows.sort(
         key=lambda r: (
@@ -169,12 +207,18 @@ def _summarize_info(record: dict) -> dict:
         "name": _first_non_null(record, ["name", "fundName", "etfName"]),
         "provider": _first_non_null(record, ["issuer", "fundFamily", "provider"]),
         "expense_ratio": _safe_float(
-            _first_non_null(record, ["expenseRatio", "expenseRatioPct", "expense_ratio"])
+            _first_non_null(
+                record, ["expenseRatio", "expenseRatioPct", "expense_ratio"]
+            )
         ),
         "aum": _safe_float(
-            _first_non_null(record, ["aum", "assetsUnderManagement", "netAssets", "totalAssets"])
+            _first_non_null(
+                record, ["aum", "assetsUnderManagement", "netAssets", "totalAssets"]
+            )
         ),
-        "inception_date": _first_non_null(record, ["inceptionDate", "fundInceptionDate", "launchDate"]),
+        "inception_date": _first_non_null(
+            record, ["inceptionDate", "fundInceptionDate", "launchDate"]
+        ),
         "asset_class": _first_non_null(record, ["assetClass", "category"]),
     }
 
@@ -183,13 +227,20 @@ def _summarize_disclosure(records: list[dict], limit: int) -> list[dict]:
     """Summarize top disclosure holders."""
     rows = []
     for record in records:
-        rows.append({
-            "holder": _first_non_null(record, ["holder", "investorName", "name"]) or "",
-            "weight_pct": _safe_float(
-                _first_non_null(record, ["weightPercentage", "weight", "portfolioPercent"])
-            ),
-            "shares": _safe_float(_first_non_null(record, ["sharesNumber", "shares"])),
-        })
+        rows.append(
+            {
+                "holder": _first_non_null(record, ["holder", "investorName", "name"])
+                or "",
+                "weight_pct": _safe_float(
+                    _first_non_null(
+                        record, ["weightPercentage", "weight", "portfolioPercent"]
+                    )
+                ),
+                "shares": _safe_float(
+                    _first_non_null(record, ["sharesNumber", "shares"])
+                ),
+            }
+        )
 
     rows.sort(
         key=lambda r: (
@@ -266,11 +317,12 @@ def get_etf_holdings(
         source_status: dict[str, dict] = {}
         warnings: list[str] = []
         raw_sections: dict[str, list[dict] | dict] = {
-            section: {} if section == "info" else []
-            for section in requested_sections
+            section: {} if section == "info" else [] for section in requested_sections
         }
 
-        with ThreadPoolExecutor(max_workers=min(len(requested_sections), 6)) as executor:
+        with ThreadPoolExecutor(
+            max_workers=min(len(requested_sections), 6)
+        ) as executor:
             futures = {
                 executor.submit(
                     _safe_fetch_records,
@@ -309,7 +361,9 @@ def get_etf_holdings(
                     warnings.append(f"{section}: {result['error']}")
 
         failed_sections = [
-            section for section in requested_sections if not source_status[section]["ok"]
+            section
+            for section in requested_sections
+            if not source_status[section]["ok"]
         ]
         if failed_sections:
             return {
@@ -332,15 +386,21 @@ def get_etf_holdings(
             if output == "file" and "holdings" in requested_sections:
                 holdings_records = raw_sections.get("holdings", [])
                 if isinstance(holdings_records, list):
-                    symbol_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", normalized_symbol).strip("_") or "ETF"
+                    symbol_slug = (
+                        re.sub(r"[^A-Za-z0-9._-]+", "_", normalized_symbol).strip("_")
+                        or "ETF"
+                    )
                     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-                    file_path = FILE_OUTPUT_DIR / f"etf_holdings_{symbol_slug}_{timestamp}.csv"
+                    file_path = (
+                        FILE_OUTPUT_DIR / f"etf_holdings_{symbol_slug}_{timestamp}.csv"
+                    )
                     write_csv(holdings_records, file_path)
 
                     sections_out = dict(raw_sections)
                     sections_out["holdings"] = _build_holdings_file_summary(
                         holdings_records,
                         file_path=str(file_path),
+                        container_symbol=normalized_symbol,
                     )
                     output_mode = "file"
         else:
@@ -350,6 +410,7 @@ def get_etf_holdings(
                     sections_out["holdings"] = _summarize_holdings(
                         raw_sections.get("holdings", []),
                         limit,
+                        container_symbol=normalized_symbol,
                     )
                 elif section == "sectors":
                     sections_out["sectors"] = _summarize_weightings(
@@ -394,14 +455,17 @@ def get_etf_holdings(
         sys.stdout = _saved
 
 
-def _build_holdings_file_summary(records: list[dict], file_path: str) -> dict:
+def _build_holdings_file_summary(
+    records: list[dict],
+    file_path: str,
+    *,
+    container_symbol: str | None = None,
+) -> dict:
     """Build compact holdings metadata when full holdings are written to file."""
-    top_5 = _summarize_holdings(records, 5)
-    top_25 = _summarize_holdings(records, 25)
+    top_5 = _summarize_holdings(records, 5, container_symbol=container_symbol)
+    top_25 = _summarize_holdings(records, 25, container_symbol=container_symbol)
     coverage = sum(
-        row["weight_pct"]
-        for row in top_25
-        if row.get("weight_pct") is not None
+        row["weight_pct"] for row in top_25 if row.get("weight_pct") is not None
     )
 
     return {

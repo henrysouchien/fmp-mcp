@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 FMP MCP Server
 
@@ -912,7 +913,7 @@ def get_news(
 
     Three modes: stock-specific news, general market news, and company press
     releases. Requires symbols for stock and press modes.
-    Note: For portfolio-aware auto-fill, use get_portfolio_news on portfolio-mcp.
+    Note: For portfolio-aware auto-fill, use get_portfolio_news on portfolio-reads-mcp.
 
     Args:
         symbols: Comma-separated tickers (e.g., "AAPL,MSFT"). Required for
@@ -969,7 +970,7 @@ def get_events_calendar(
     Can show market-wide calendars or filter to specific symbols.
     Useful for tracking upcoming catalysts and corporate actions.
     Date ranges wider than 90 days are split into FMP-compatible windows internally.
-    Note: For portfolio-aware auto-fill, use get_portfolio_events_calendar on portfolio-mcp.
+    Note: For portfolio-aware auto-fill, use get_portfolio_events_calendar on portfolio-reads-mcp.
 
     Args:
         event_type: Calendar type:

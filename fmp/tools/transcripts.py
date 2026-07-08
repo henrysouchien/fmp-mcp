@@ -41,7 +41,7 @@ from ._file_output import _cache_base, atomic_write_text
 
 # Parser version for cache invalidation. Bump when parsing logic changes.
 # Included in cache filename so old caches are naturally bypassed.
-PARSER_VERSION = 1
+PARSER_VERSION = 7
 
 # False positive speaker names to ignore (these appear as "Note:", "Source:", etc.)
 FALSE_POSITIVE_SPEAKERS = frozenset({
@@ -121,6 +121,13 @@ ANALYST_INTRO_PATTERNS = [
     ),
 ]
 
+CONSTANT_CURRENCY_FUSION_RE = re.compile(
+    r"(?P<prefix>\b(?:up|increase|increased|grew|growth|declined|decreased|down|expanded|improved)\b"
+    r"[^.\n?!]{0,160}?)"
+    r"(?P<digits>\d{2,4})%\s+in constant currency\b",
+    re.IGNORECASE,
+)
+
 _CACHE_BASE = _cache_base()
 PARSED_CACHE_DIR = _CACHE_BASE / "cache" / "transcripts_parsed"
 FILE_OUTPUT_DIR = _CACHE_BASE / "cache" / "file_output"
@@ -145,6 +152,89 @@ def _normalize_content(content: str) -> str:
     content = content.replace("\u2018", "'").replace("\u2019", "'")
     content = content.replace("\u201c", '"').replace("\u201d", '"')
     return content
+
+
+def _repair_constant_currency_percent_fusions(content: str) -> tuple[str, list[dict[str, str]]]:
+    """Repair systematic FMP drops of "% and " in constant-currency pairs."""
+    candidates = [
+        match
+        for match in CONSTANT_CURRENCY_FUSION_RE.finditer(content)
+        if not _is_guidance_range_prefix(match.group("prefix"))
+    ]
+    high_confidence_count = sum(
+        1 for match in candidates if len(match.group("digits")) >= 3
+    )
+    if high_confidence_count < 3:
+        return content, []
+
+    repairs: list[dict[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        if _is_guidance_range_prefix(match.group("prefix")):
+            return match.group(0)
+        if (
+            len(match.group("digits")) == 2
+            and _line_high_confidence_fusion_count(content, match.start()) < 8
+        ):
+            return match.group(0)
+        split = _split_fused_percent_digits(match.group("digits"))
+        if split is None:
+            return match.group(0)
+        actual_pct, constant_currency_pct = split
+        original = match.group(0)
+        repaired = (
+            f"{match.group('prefix')}{actual_pct}% and "
+            f"{constant_currency_pct}% in constant currency"
+        )
+        repairs.append({
+            "type": "fused_constant_currency_percent_pair",
+            "original": original.strip(),
+            "repaired": repaired.strip(),
+        })
+        return repaired
+
+    repaired_content = CONSTANT_CURRENCY_FUSION_RE.sub(_replace, content)
+    return repaired_content, repairs
+
+
+def _line_high_confidence_fusion_count(content: str, offset: int) -> int:
+    line_start = content.rfind("\n", 0, offset) + 1
+    line_end = content.find("\n", offset)
+    if line_end < 0:
+        line_end = len(content)
+    line = content[line_start:line_end]
+    return sum(
+        1
+        for match in CONSTANT_CURRENCY_FUSION_RE.finditer(line)
+        if len(match.group("digits")) >= 3
+        and not _is_guidance_range_prefix(match.group("prefix"))
+    )
+
+
+def _is_guidance_range_prefix(prefix: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:\bbetween\s+)?\d{1,3}%?\s+(?:and|to)\s*$",
+            prefix,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _split_fused_percent_digits(digits: str) -> tuple[int, int] | None:
+    if not digits.isdigit() or len(digits) < 2 or len(digits) > 4:
+        return None
+    if len(digits) == 2:
+        first, second = digits[:1], digits[1:]
+    elif len(digits) == 3:
+        first_two = int(digits[:2])
+        overlapping_second = int(digits[1:])
+        if overlapping_second >= 15 and 0 <= first_two - overlapping_second <= 5:
+            return first_two, overlapping_second
+        return None
+    else:
+        first, second = digits[:2], digits[2:]
+    return int(first), int(second)
 
 
 def parse_speakers(content: str) -> list[dict]:
@@ -353,8 +443,8 @@ def classify_roles(
         speaker = segment.get("speaker", "")
         text = segment.get("text", "")
 
-        if ROLE_PATTERNS["IR"].search(text):
-            name_to_role[speaker] = "IR"
+        if speaker and not _is_operator(speaker) and ROLE_PATTERNS["IR"].search(text):
+            name_to_role.setdefault(speaker, "IR")
 
         for match in role_then_name.finditer(text):
             role = _canonical_role(match.group("role"))
@@ -523,6 +613,7 @@ def parse_transcript(content: str) -> dict:
         Dict with keys: prepared_remarks, qa, qa_exchanges, metadata.
     """
     content = _normalize_content(content)
+    content, text_repairs = _repair_constant_currency_percent_fusions(content)
     segments = parse_speakers(content)
     qa_boundary = find_qa_boundary(segments)
     classify_roles(segments, qa_boundary)
@@ -577,18 +668,24 @@ def parse_transcript(content: str) -> dict:
         if s["speaker"].strip().lower() != "operator"
     }
 
+    metadata = {
+        "total_word_count": total_words,
+        "prepared_remarks_word_count": prepared_words,
+        "qa_word_count": qa_words,
+        "speaker_list": speaker_list,
+        "num_qa_exchanges": len(qa_exchanges),
+        "num_speakers": len(non_operator_speakers),
+    }
+    if text_repairs:
+        metadata["text_repair_count"] = len(text_repairs)
+        metadata["text_repair_types"] = sorted({repair["type"] for repair in text_repairs})
+        metadata["text_repair_examples"] = text_repairs[:5]
+
     return {
         "prepared_remarks": prepared_remarks,
         "qa": qa,
         "qa_exchanges": qa_exchanges,
-        "metadata": {
-            "total_word_count": total_words,
-            "prepared_remarks_word_count": prepared_words,
-            "qa_word_count": qa_words,
-            "speaker_list": speaker_list,
-            "num_qa_exchanges": len(qa_exchanges),
-            "num_speakers": len(non_operator_speakers),
-        },
+        "metadata": metadata,
     }
 
 
@@ -701,8 +798,14 @@ def _build_transcript_body(result: dict) -> tuple[str, dict]:
     lines = [
         f"# {symbol} Earnings Call - Q{quarter} FY{year}",
         f"> Total words: {total_words:,} | Speakers: {speaker_count} | Exchanges: {exchange_count}",
-        "---",
     ]
+    if metadata.get("text_repair_count"):
+        repair_count = int(metadata.get("text_repair_count", 0) or 0)
+        lines.append(
+            f"> Transcript text repairs: {repair_count} FMP constant-currency "
+            "percentage pair repairs applied."
+        )
+    lines.append("---")
 
     if not has_content:
         lines.append("No content matched filters.")
@@ -826,7 +929,7 @@ def _resolve_transcript_cik(symbol: str, filing_date: str) -> str | None:
         return None
 
     try:
-        from core.corpus.validation import resolve_operating_cik
+        from research_corpus.validation import resolve_operating_cik
     except ImportError:
         return None
 
@@ -885,9 +988,9 @@ def _ingest_transcript_result(result: dict) -> Path:
             "CORPUS_ROOT and CORPUS_DB_PATH are required when CORPUS_INGEST_ENABLED=true"
         )
 
-    # Lazy import: `core.corpus` is monorepo-internal, not shipped to fmp-mcp dist.
-    from core.corpus.db import open_corpus_db
-    from core.corpus.ingest import ingest_raw
+    # Lazy import: `research_corpus` is monorepo-internal, not shipped to fmp-mcp dist.
+    from research_corpus.db import open_corpus_db
+    from research_corpus.ingest import ingest_raw
 
     body, metadata = _build_transcript_body(result)
     db = open_corpus_db(Path(db_path_raw).expanduser().resolve())
@@ -908,7 +1011,7 @@ def _get_cache_path(symbol: str, year: int, quarter: int) -> Path:
     Build path for parsed transcript JSON cache.
 
     Format: cache/transcripts_parsed/{SYMBOL}_{Q}Q{YY}_v{VERSION}_transcript_parsed.json
-    Example: cache/transcripts_parsed/AAPL_4Q24_v1_transcript_parsed.json
+    Example: cache/transcripts_parsed/AAPL_4Q24_v6_transcript_parsed.json
     """
     return PARSED_CACHE_DIR / (
         f"{symbol.upper()}_{quarter}Q{year % 100:02d}_v{PARSER_VERSION}_transcript_parsed.json"

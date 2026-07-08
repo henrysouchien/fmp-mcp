@@ -4,26 +4,14 @@ MCP Tool: get_insider_trades
 Insider trade flow and statistics for a single symbol.
 """
 
+from ._helpers import safe_float_or_none as _safe_float
+
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
-
-
-def _safe_float(value):
-    """Parse numeric values with a None fallback."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.strip().replace("%", "").replace(",", "")
-        if not value:
-            return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _first_non_null(record: dict, keys: list[str]):
@@ -40,7 +28,14 @@ def _extract_as_of(records: list[dict]):
     for record in records:
         value = _first_non_null(
             record,
-            ["timestamp", "lastUpdated", "filingDate", "transactionDate", "date", "acceptedDate"],
+            [
+                "timestamp",
+                "lastUpdated",
+                "filingDate",
+                "transactionDate",
+                "date",
+                "acceptedDate",
+            ],
         )
         if value is not None:
             return str(value)
@@ -104,28 +99,41 @@ def _format_trade_summary(records: list[dict], limit: int) -> list[dict]:
         )
         price = _safe_float(_first_non_null(record, ["price", "pricePerShare"]))
         value = _safe_float(
-            _first_non_null(record, ["value", "transactionValue", "securitiesTransactedValue"])
+            _first_non_null(
+                record, ["value", "transactionValue", "securitiesTransactedValue"]
+            )
         )
         if value is None and shares is not None and price is not None:
             value = round(shares * price, 2)
 
-        trades.append({
-            "date": str(
-                _first_non_null(record, ["transactionDate", "filingDate", "date", "acceptedDate"]) or ""
-            )[:10],
-            "insider": _first_non_null(record, ["reportingName", "insiderName", "name"]) or "",
-            "title": _first_non_null(
-                record,
-                ["typeOfOwner", "officerTitle", "title", "reportingTitle"],
-            )
-            or "",
-            "type": _normalize_trade_type(
-                _first_non_null(record, ["transactionType", "acquisitionOrDisposition", "type"])
-            ),
-            "shares": int(shares) if shares is not None else None,
-            "price": price,
-            "value": value,
-        })
+        trades.append(
+            {
+                "date": str(
+                    _first_non_null(
+                        record,
+                        ["transactionDate", "filingDate", "date", "acceptedDate"],
+                    )
+                    or ""
+                )[:10],
+                "insider": _first_non_null(
+                    record, ["reportingName", "insiderName", "name"]
+                )
+                or "",
+                "title": _first_non_null(
+                    record,
+                    ["typeOfOwner", "officerTitle", "title", "reportingTitle"],
+                )
+                or "",
+                "type": _normalize_trade_type(
+                    _first_non_null(
+                        record, ["transactionType", "acquisitionOrDisposition", "type"]
+                    )
+                ),
+                "shares": int(shares) if shares is not None else None,
+                "price": price,
+                "value": value,
+            }
+        )
 
     trades.sort(key=lambda t: t.get("date") or "", reverse=True)
     return trades[:limit]

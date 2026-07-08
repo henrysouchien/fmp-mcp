@@ -32,8 +32,12 @@ import pandas as pd
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
-from ._helpers import _last_trading_day
-from fmp._shared.fmp_helpers import compute_forward_pe, first_dataframe_record, parse_fmp_float
+from ._helpers import _last_trading_day, safe_float_or_none as _safe_float
+from fmp._shared.fmp_helpers import (
+    compute_forward_pe,
+    first_dataframe_record,
+    parse_fmp_float,
+)
 
 
 # Valid indicator names accepted by the FMP economic-indicators endpoint
@@ -93,9 +97,7 @@ def _compute_trend(values: list[float], window: int = 3) -> str:
     else:
         # Net direction over window
         pct_change = (
-            (recent[-1] - recent[0]) / abs(recent[0]) * 100
-            if recent[0] != 0
-            else 0
+            (recent[-1] - recent[0]) / abs(recent[0]) * 100 if recent[0] != 0 else 0
         )
         if abs(pct_change) < 0.5:
             return "stable"
@@ -132,7 +134,9 @@ def _format_indicator_summary(data: list[dict]) -> dict:
 
     latest_value = values[-1]
     previous_value = values[-2] if len(values) >= 2 else None
-    change = round(latest_value - previous_value, 4) if previous_value is not None else None
+    change = (
+        round(latest_value - previous_value, 4) if previous_value is not None else None
+    )
     change_pct = (
         round((latest_value - previous_value) / abs(previous_value) * 100, 4)
         if previous_value is not None and previous_value != 0
@@ -180,15 +184,17 @@ def _format_calendar_summary(data: list[dict]) -> dict:
         event_date = event.get("date", "")
         impact = event.get("impact", "")
         if event_date >= today_str and impact and impact.lower() == "high":
-            upcoming_high_impact.append({
-                "event": event.get("event", ""),
-                "date": event_date,
-                "country": event.get("country", ""),
-                "previous": event.get("previous"),
-                "estimate": event.get("estimate"),
-                "actual": event.get("actual"),
-                "impact": impact,
-            })
+            upcoming_high_impact.append(
+                {
+                    "event": event.get("event", ""),
+                    "date": event_date,
+                    "country": event.get("country", ""),
+                    "previous": event.get("previous"),
+                    "estimate": event.get("estimate"),
+                    "actual": event.get("actual"),
+                    "impact": impact,
+                }
+            )
     # Sort by date, take first 5
     upcoming_high_impact.sort(key=lambda e: e["date"])
     upcoming_high_impact = upcoming_high_impact[:5]
@@ -207,13 +213,15 @@ def _format_calendar_summary(data: list[dict]) -> dict:
         ):
             surprise_pct = round((actual - estimate) / abs(estimate) * 100, 2)
             if abs(surprise_pct) > 0.01:  # Exclude trivially zero differences
-                recent_surprises.append({
-                    "event": event.get("event", ""),
-                    "date": event_date,
-                    "estimate": estimate,
-                    "actual": actual,
-                    "surprise_pct": surprise_pct,
-                })
+                recent_surprises.append(
+                    {
+                        "event": event.get("event", ""),
+                        "date": event_date,
+                        "estimate": estimate,
+                        "actual": actual,
+                        "surprise_pct": surprise_pct,
+                    }
+                )
     # Sort by absolute surprise magnitude descending
     recent_surprises.sort(key=lambda e: abs(e["surprise_pct"]), reverse=True)
     recent_surprises = recent_surprises[:5]
@@ -372,7 +380,9 @@ def _fetch_indicator(
             "columns": columns,
         }
         if output == "file":
-            indicator_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(indicator_name)).strip("_")
+            indicator_slug = re.sub(
+                r"[^A-Za-z0-9._-]+", "_", str(indicator_name)
+            ).strip("_")
             indicator_slug = indicator_slug or "indicator"
             timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
             file_path = FILE_OUTPUT_DIR / f"economic_{indicator_slug}_{timestamp}.csv"
@@ -459,8 +469,7 @@ def _fetch_calendar(
     if country:
         country_upper = str(country).upper()
         records = [
-            r for r in records
-            if str(r.get("country") or "").upper() == country_upper
+            r for r in records if str(r.get("country") or "").upper() == country_upper
         ]
 
     if format == "full":
@@ -592,8 +601,12 @@ def _fetch_sector_overview(
     fetch_params = {"date": snapshot_date}
 
     # Fetch performance and P/E snapshots
-    perf_df = _fetch_snapshot_frame(client, perf_endpoint, use_cache=use_cache, **fetch_params)
-    pe_df = _fetch_snapshot_frame(client, pe_endpoint, use_cache=use_cache, **fetch_params)
+    perf_df = _fetch_snapshot_frame(
+        client, perf_endpoint, use_cache=use_cache, **fetch_params
+    )
+    pe_df = _fetch_snapshot_frame(
+        client, pe_endpoint, use_cache=use_cache, **fetch_params
+    )
 
     # Determine the snapshot date from data (if not provided by user)
     display_date = snapshot_date
@@ -639,11 +652,13 @@ def _fetch_sector_overview(
             # Filter raw data to requested sector/industry
             sector_lower = sector_filter.lower()
             result["performance"] = [
-                r for r in perf_records
+                r
+                for r in perf_records
                 if r.get(name_key, r.get("sector", "")).lower() == sector_lower
             ]
             result["valuation"] = [
-                r for r in pe_records
+                r
+                for r in pe_records
                 if r.get(name_key, r.get("sector", "")).lower() == sector_lower
             ]
             result["row_count"] = max(
@@ -666,14 +681,20 @@ def _fetch_sector_overview(
         sectors = [s for s in sectors if s[name_key].lower() == sector_lower]
 
     # Sort by change % descending (treat None as 0 for sorting)
-    sectors.sort(key=lambda s: s.get("change_pct") if s.get("change_pct") is not None else 0, reverse=True)
+    sectors.sort(
+        key=lambda s: s.get("change_pct") if s.get("change_pct") is not None else 0,
+        reverse=True,
+    )
 
     # Compute best/worst
     best = None
     worst = None
     if sectors:
         best = {name_key: sectors[0][name_key], "change_pct": sectors[0]["change_pct"]}
-        worst = {name_key: sectors[-1][name_key], "change_pct": sectors[-1]["change_pct"]}
+        worst = {
+            name_key: sectors[-1][name_key],
+            "change_pct": sectors[-1]["change_pct"],
+        }
 
     result = {
         "status": "success",
@@ -740,7 +761,9 @@ def _fetch_symbol_pe_comparison(
         snapshot_date = _last_trading_day()
 
     client = FMPClient()
-    pe_df = _fetch_snapshot_frame(client, pe_endpoint, use_cache=use_cache, date=snapshot_date)
+    pe_df = _fetch_snapshot_frame(
+        client, pe_endpoint, use_cache=use_cache, date=snapshot_date
+    )
 
     benchmark_lookup: dict[str, tuple[str, float]] = {}
     if not pe_df.empty:
@@ -774,7 +797,9 @@ def _fetch_symbol_pe_comparison(
         for future in as_completed(futures):
             requested_symbol = futures[future]
             try:
-                symbol, profile, ratios, estimates, income_statement, error = future.result()
+                symbol, profile, ratios, estimates, income_statement, error = (
+                    future.result()
+                )
             except Exception:
                 failed_symbols_set.add(requested_symbol)
                 continue
@@ -947,7 +972,11 @@ def _fetch_symbol_data(
             limit=4,
             use_cache=use_cache,
         )
-        if estimates_df is not None and hasattr(estimates_df, "empty") and not estimates_df.empty:
+        if (
+            estimates_df is not None
+            and hasattr(estimates_df, "empty")
+            and not estimates_df.empty
+        ):
             estimates = estimates_df.to_dict("records")
         else:
             estimates = []
@@ -1050,9 +1079,15 @@ def _merge_sector_data(
             name = str(row.get(name_key, row.get("sector", "")))
             if not name:
                 continue
-            change_pct_val = row.get("changesPercentage", row.get("averageChange", row.get("change_pct")))
+            change_pct_val = row.get(
+                "changesPercentage", row.get("averageChange", row.get("change_pct"))
+            )
             try:
-                change_pct = round(float(change_pct_val), 4) if change_pct_val is not None else None
+                change_pct = (
+                    round(float(change_pct_val), 4)
+                    if change_pct_val is not None
+                    else None
+                )
             except (ValueError, TypeError):
                 change_pct = None
 
@@ -1073,11 +1108,13 @@ def _merge_sector_data(
                     if rn.lower() == name_lower:
                         original_name = rn
                         break
-            sectors.append({
-                name_key: original_name,
-                "change_pct": None,
-                "pe_ratio": pe_val,
-            })
+            sectors.append(
+                {
+                    name_key: original_name,
+                    "change_pct": None,
+                    "pe_ratio": pe_val,
+                }
+            )
 
     return sectors
 
@@ -1094,7 +1131,14 @@ _INDEX_NAMES = {
 }
 
 # Include param values = response dict keys (1:1 mapping)
-MARKET_CONTEXT_SECTIONS = ["indices", "sectors", "gainers", "losers", "actives", "events"]
+MARKET_CONTEXT_SECTIONS = [
+    "indices",
+    "sectors",
+    "gainers",
+    "losers",
+    "actives",
+    "events",
+]
 
 
 def _safe_fetch_records(
@@ -1118,20 +1162,6 @@ def _safe_fetch_records(
         return {"ok": True, "data": [], "error": None}
     except Exception as e:
         return {"ok": False, "data": [], "error": str(e)}
-
-
-def _safe_float(val, default=None):
-    """Parse numeric value with fallback."""
-    if val is None:
-        return default
-    if isinstance(val, str):
-        val = val.strip().replace("%", "").replace(",", "")
-        if not val:
-            return default
-    try:
-        return float(val)
-    except (TypeError, ValueError):
-        return default
 
 
 def _get_change_pct(record: dict):
@@ -1164,7 +1194,6 @@ def _extract_as_of(records: list[dict]) -> Optional[str]:
     return None
 
 
-
 def _normalize_sectors(records: list[dict]) -> tuple[list[dict], Optional[str]]:
     """Normalize sector performance records."""
     sectors = []
@@ -1172,10 +1201,12 @@ def _normalize_sectors(records: list[dict]) -> tuple[list[dict], Optional[str]]:
         sector_name = rec.get("sector") or rec.get("name")
         if not sector_name:
             continue
-        sectors.append({
-            "sector": str(sector_name),
-            "change_pct": _get_change_pct(rec),
-        })
+        sectors.append(
+            {
+                "sector": str(sector_name),
+                "change_pct": _get_change_pct(rec),
+            }
+        )
 
     sectors.sort(
         key=lambda s: (
@@ -1204,7 +1235,9 @@ def _normalize_movers(
             "change_pct": _get_change_pct(rec),
         }
         if include_price:
-            item["price"] = _safe_float(_first_non_null(rec, ["price", "lastPrice", "last"]))
+            item["price"] = _safe_float(
+                _first_non_null(rec, ["price", "lastPrice", "last"])
+            )
         if include_volume:
             vol = _safe_float(rec.get("volume"))
             item["volume"] = int(vol) if vol is not None else None
@@ -1222,13 +1255,15 @@ def _normalize_events(records: list[dict]) -> tuple[list[dict], Optional[str]]:
         event_date = str(rec.get("date") or "")[:10]
         if not event_name and not event_date:
             continue
-        events.append({
-            "event": event_name or "",
-            "date": event_date,
-            "country": rec.get("country") or "",
-            "estimate": rec.get("estimate"),
-            "impact": rec.get("impact") or "",
-        })
+        events.append(
+            {
+                "event": event_name or "",
+                "date": event_date,
+                "country": rec.get("country") or "",
+                "estimate": rec.get("estimate"),
+                "impact": rec.get("impact") or "",
+            }
+        )
 
     events.sort(key=lambda e: e.get("date") or "")
     return events, _extract_as_of(records)
@@ -1308,19 +1343,26 @@ def get_market_context(
             indices = []
             as_of = None
             index_errors = []
+            index_date = _last_trading_day()
             for symbol, name in _INDEX_NAMES.items():
                 result = _safe_fetch_records(
-                    client, "historical_price_eod", use_cache=use_cache,
-                    symbol=symbol, limit=1,
+                    client,
+                    "historical_price_eod",
+                    use_cache=use_cache,
+                    symbol=symbol,
+                    from_date=index_date,
+                    to_date=index_date,
                 )
                 if result["ok"] and result["data"]:
                     rec = result["data"][0]
-                    indices.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "price": _safe_float(rec.get("close")),
-                        "change_pct": _safe_float(rec.get("changePercent")),
-                    })
+                    indices.append(
+                        {
+                            "symbol": symbol,
+                            "name": name,
+                            "price": _safe_float(rec.get("close")),
+                            "change_pct": _safe_float(rec.get("changePercent")),
+                        }
+                    )
                     if as_of is None:
                         as_of = str(rec.get("date", ""))
                 elif not result["ok"]:
@@ -1364,7 +1406,11 @@ def get_market_context(
                     include_volume=False,
                 )
                 gainers.sort(
-                    key=lambda g: g.get("change_pct") if g.get("change_pct") is not None else float("-inf"),
+                    key=lambda g: (
+                        g.get("change_pct")
+                        if g.get("change_pct") is not None
+                        else float("-inf")
+                    ),
                     reverse=True,
                 )
                 if format == "summary":
@@ -1387,7 +1433,11 @@ def get_market_context(
                     include_volume=False,
                 )
                 losers.sort(
-                    key=lambda l: l.get("change_pct") if l.get("change_pct") is not None else float("inf"),
+                    key=lambda l: (
+                        l.get("change_pct")
+                        if l.get("change_pct") is not None
+                        else float("inf")
+                    ),
                 )
                 if format == "summary":
                     losers = losers[:5]
@@ -1434,11 +1484,12 @@ def get_market_context(
                 events, as_of = _normalize_events(result["data"])
                 # Filter to US events by default (same as get_economic_data)
                 events = [
-                    e for e in events
-                    if str(e.get("country") or "").upper() == "US"
+                    e for e in events if str(e.get("country") or "").upper() == "US"
                 ]
                 if format == "summary":
-                    events = [e for e in events if str(e.get("impact", "")).lower() == "high"][:5]
+                    events = [
+                        e for e in events if str(e.get("impact", "")).lower() == "high"
+                    ][:5]
                 response["events"] = events
                 _add_source_status(source_status, "events", True, len(events), as_of)
             else:
@@ -1450,7 +1501,9 @@ def get_market_context(
         response["warnings"] = warnings
 
         failed_sections = [
-            section for section in requested_sections if not source_status[section]["ok"]
+            section
+            for section in requested_sections
+            if not source_status[section]["ok"]
         ]
         if failed_sections:
             return {

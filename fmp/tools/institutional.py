@@ -4,6 +4,8 @@ MCP Tool: get_institutional_ownership
 Institutional ownership analytics for a single symbol.
 """
 
+from ._helpers import safe_float_or_none as _safe_float
+
 import datetime as dt
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,20 +13,6 @@ from typing import Literal, Optional
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
-
-
-def _safe_float(value):
-    """Parse numeric values with a None fallback."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.strip().replace("%", "").replace(",", "")
-        if not value:
-            return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _first_non_null(record: dict, keys: list[str]):
@@ -41,7 +29,14 @@ def _extract_as_of(records: list[dict]) -> Optional[str]:
     for record in records:
         value = _first_non_null(
             record,
-            ["timestamp", "lastUpdated", "filingDate", "date", "reportDate", "acceptedDate"],
+            [
+                "timestamp",
+                "lastUpdated",
+                "filingDate",
+                "date",
+                "reportDate",
+                "acceptedDate",
+            ],
         )
         if value is not None:
             return str(value)
@@ -80,7 +75,9 @@ def _latest_due_13f_quarter(as_of: Optional[dt.date] = None) -> tuple[int, int]:
     raise ValueError(f"No due 13F quarter found for {as_of.isoformat()}")
 
 
-def _resolve_filing_period(year: Optional[int], quarter: Optional[int]) -> tuple[int, int]:
+def _resolve_filing_period(
+    year: Optional[int], quarter: Optional[int]
+) -> tuple[int, int]:
     """Resolve optional tool period args into an explicit filing year/quarter."""
     if year is None and quarter is None:
         return _latest_due_13f_quarter()
@@ -134,19 +131,31 @@ def _format_holder_summary(records: list[dict], limit: int) -> list[dict]:
     holders = []
     for record in records:
         shares = _safe_float(
-            _first_non_null(record, ["sharesNumber", "shares", "sharesHeld", "sharesAmount"])
+            _first_non_null(
+                record, ["sharesNumber", "shares", "sharesHeld", "sharesAmount"]
+            )
         )
         item = {
-            "holder": _first_non_null(record, ["holder", "investorName", "institutionName", "name"]) or "",
+            "holder": _first_non_null(
+                record, ["holder", "investorName", "institutionName", "name"]
+            )
+            or "",
             "shares": int(shares) if shares is not None else None,
             "change_shares": _safe_float(
-                _first_non_null(record, ["changeInSharesNumber", "changeInShares", "change"])
+                _first_non_null(
+                    record, ["changeInSharesNumber", "changeInShares", "change"]
+                )
             ),
             "weight_pct": _safe_float(
-                _first_non_null(record, ["portfolioPercent", "weight", "weightPercentage"])
+                _first_non_null(
+                    record, ["portfolioPercent", "weight", "weightPercentage"]
+                )
             ),
             "change_pct": _safe_float(
-                _first_non_null(record, ["changePercent", "changeInSharesPercentage", "changePercentage"])
+                _first_non_null(
+                    record,
+                    ["changePercent", "changeInSharesPercentage", "changePercentage"],
+                )
             ),
         }
         holders.append(item)

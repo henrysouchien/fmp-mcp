@@ -11,6 +11,7 @@ Agent orientation:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import warnings
 from dataclasses import dataclass, field
 from enum import Enum
@@ -206,6 +207,32 @@ def list_endpoints(category: str | None = None) -> list[FMPEndpoint]:
 def get_categories() -> list[str]:
     """Get all unique endpoint categories."""
     return sorted(set(e.category for e in _ENDPOINTS.values()))
+
+
+def _flatten_revenue_product_segmentation(df: Any) -> Any:
+    """Flatten FMP revenue-product segmentation payload rows."""
+    import pandas as pd
+
+    metadata_columns = ("symbol", "date", "period", "fiscalYear", "reportedCurrency")
+    flattened: list[dict[str, Any]] = []
+
+    for row in df.to_dict(orient="records"):
+        metadata = {column: row.get(column) for column in metadata_columns}
+        segment_data = row.get("data")
+        if isinstance(segment_data, Mapping):
+            for segment, revenue in segment_data.items():
+                flattened.append(
+                    {
+                        **metadata,
+                        "segment": str(segment),
+                        "revenue": revenue,
+                    }
+                )
+            continue
+
+        flattened.append({**metadata, "segment": None, "revenue": None})
+
+    return pd.DataFrame(flattened, columns=[*metadata_columns, "segment", "revenue"])
 
 
 # ============================================================================
@@ -407,6 +434,31 @@ register_endpoint(
         ],
         cache_dir="cache/fundamentals",
         cache_refresh=CacheRefresh.HASH_ONLY,  # Historical filings don't change
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="revenue_product_segmentation",
+        path="/revenue-product-segmentation",
+        description="Revenue by product or operating segment, flattened to one row per segment",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs/stable/revenue-product-segmentation",
+        category="fundamentals",
+        api_version="stable",
+        params=[
+            EndpointParam("symbol", ParamType.STRING, required=True, description="Stock symbol"),
+            EndpointParam(
+                "period",
+                ParamType.ENUM,
+                default="annual",
+                enum_values=["annual", "quarter"],
+                description="Reporting period",
+            ),
+            EndpointParam("limit", ParamType.INTEGER, default=10, description="Number of periods"),
+        ],
+        cache_dir="cache/fundamentals",
+        cache_refresh=CacheRefresh.HASH_ONLY,
+        response_transform=_flatten_revenue_product_segmentation,
     )
 )
 

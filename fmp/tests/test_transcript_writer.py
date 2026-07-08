@@ -9,11 +9,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.corpus.db import open_corpus_db
-from core.corpus.ingest import ingest_raw
-import core.corpus.validation as corpus_validation
+from research_corpus.db import open_corpus_db
+from research_corpus.ingest import ingest_raw
+import research_corpus.validation as corpus_validation
 from fmp.tools import transcripts
-from fmp.tools.transcripts import _build_transcript_body
+from fmp.tools.transcripts import _build_transcript_body, parse_transcript
 
 
 def test_returns_body_and_metadata(tmp_path) -> None:
@@ -72,6 +72,179 @@ def test_role_conditional() -> None:
 
     assert '### SPEAKER: Jane Doe\nNo role.' in body
     assert '### SPEAKER: Jane Doe (CEO)\nHas role.' in body
+
+
+def test_parse_transcript_does_not_overwrite_explicit_role_with_ir_mention() -> None:
+    parsed = parse_transcript(
+        "\n".join(
+            [
+                (
+                    "Operator: It is now my pleasure to introduce your host, Brett Iversen, "
+                    "Vice President of Investor Relations."
+                ),
+                (
+                    "Brett Iversen: On the call with me are Satya Nadella, Chairman and "
+                    "Chief Executive Officer; Amy Hood, Chief Financial Officer. On the "
+                    "Microsoft Investor Relations website, you can find our earnings release."
+                ),
+                "Satya Nadella: Thank you, Brett. This quarter we saw continued strength.",
+                (
+                    "Amy Hood: Thank you, Satya, and I want to congratulate Brett for his "
+                    "leadership of Investor Relations."
+                ),
+                "Operator: We will now begin the question-and-answer session.",
+                "Keith Weiss: Thank you.",
+                "Amy Hood: Thanks, Keith. Let me spend a little time on that.",
+            ]
+        )
+    )
+
+    prepared_roles = {
+        segment["speaker"]: segment["role"]
+        for segment in parsed["prepared_remarks"]
+    }
+    qa_amy = [
+        segment
+        for segment in parsed["qa"]
+        if segment["speaker"] == "Amy Hood"
+    ]
+    assert prepared_roles["Brett Iversen"] == "IR"
+    assert prepared_roles["Satya Nadella"] == "CEO"
+    assert prepared_roles["Amy Hood"] == "CFO"
+    assert qa_amy[0]["role"] == "CFO"
+
+
+def test_parse_transcript_repairs_systematic_constant_currency_percent_fusions() -> None:
+    parsed = parse_transcript(
+        "\n".join(
+            [
+                "Operator: Welcome to the call.",
+                (
+                    "Amy Hood: This quarter, revenue was $82.9 billion, up 1815% "
+                    "in constant currency. Gross margin dollars increased 1613% "
+                    "in constant currency. Operating income increased 2016% in "
+                    "constant currency. Earnings per share increased 218% in "
+                    "constant currency. Microsoft Cloud grew 2925% in constant "
+                    "currency. Productivity revenue grew 1713% in constant "
+                    "currency. Commercial cloud revenue increased 1915% in "
+                    "constant currency. Consumer cloud revenue increased 3329% "
+                    "in constant currency. Dynamics revenue increased 2217% in "
+                    "constant currency. Cloud segment revenue grew 3028% in "
+                    "constant currency. Azure grew 4039% in constant currency. "
+                    "Operating expenses increased 98% in constant currency. "
+                    "LinkedIn revenue increased 129% in constant currency. "
+                    "Revenue increased slightly and decreased 3% in constant "
+                    "currency. On a reported basis, we expect revenue growth to "
+                    "be between 13 and 14% in constant currency. We expect growth "
+                    "to be between 13% and 14% in constant currency. We expect "
+                    "growth of 12% to 13% in constant currency."
+                ),
+                "Operator: We will now begin Q&A.",
+                "Keith Weiss: Thank you.",
+            ]
+        )
+    )
+
+    text = parsed['prepared_remarks'][1]['text']
+    assert 'up 18% and 15% in constant currency' in text
+    assert 'increased 16% and 13% in constant currency' in text
+    assert 'Earnings per share increased 21% and 18% in constant currency' in text
+    assert 'Operating expenses increased 9% and 8% in constant currency' in text
+    assert 'LinkedIn revenue increased 129% in constant currency' in text
+    assert 'LinkedIn revenue increased 12% and 9% in constant currency' not in text
+    assert 'decreased 3% in constant currency' in text
+    assert 'between 13 and 14% in constant currency' in text
+    assert 'between 13% and 14% in constant currency' in text
+    assert '12% to 13% in constant currency' in text
+    assert parsed['metadata']['text_repair_count'] == 12
+    assert parsed['metadata']['text_repair_types'] == [
+        'fused_constant_currency_percent_pair'
+    ]
+
+    body, _ = _build_transcript_body({
+        **parsed,
+        'symbol': 'MSFT',
+        'quarter': 3,
+        'year': 2026,
+        'date': '2026-04-29',
+    })
+    assert (
+        'Transcript text repairs: 12 FMP constant-currency percentage pair repairs applied.'
+        in body
+    )
+
+
+def test_parse_transcript_does_not_split_isolated_constant_currency_percent() -> None:
+    parsed = parse_transcript(
+        "Amy Hood: Revenue grew 46% in constant currency on strong demand."
+    )
+
+    text = parsed['prepared_remarks'][0]['text']
+    assert 'Revenue grew 46% in constant currency' in text
+    assert 'text_repair_count' not in parsed['metadata']
+
+
+def test_parse_transcript_does_not_split_two_digit_percent_on_light_systematic_signal() -> None:
+    parsed = parse_transcript(
+        (
+            "Amy Hood: Revenue was up 1815% in constant currency. Gross margin "
+            "dollars increased 1613% in constant currency. Operating income "
+            "increased 2016% in constant currency. Azure grew 46% in constant "
+            "currency."
+        )
+    )
+
+    text = parsed['prepared_remarks'][0]['text']
+    assert 'up 18% and 15% in constant currency' in text
+    assert 'Azure grew 46% in constant currency' in text
+    assert 'Azure grew 4% and 6% in constant currency' not in text
+    assert parsed['metadata']['text_repair_count'] == 3
+
+
+def test_parse_transcript_does_not_split_two_digit_percent_on_separate_speaker_line() -> None:
+    parsed = parse_transcript(
+        "\n".join(
+            [
+                (
+                    "Amy Hood: Revenue was up 1815% in constant currency. Gross "
+                    "margin dollars increased 1613% in constant currency. "
+                    "Operating income increased 2016% in constant currency. "
+                    "Microsoft Cloud grew 2925% in constant currency. Productivity "
+                    "revenue grew 1713% in constant currency. Commercial cloud "
+                    "revenue increased 1915% in constant currency. Consumer cloud "
+                    "revenue increased 3329% in constant currency. Dynamics revenue "
+                    "increased 2217% in constant currency."
+                ),
+                "Satya Nadella: Azure grew 46% in constant currency.",
+            ]
+        )
+    )
+
+    text = parsed['prepared_remarks'][1]['text']
+    assert 'Azure grew 46% in constant currency' in text
+    assert 'Azure grew 4% and 6% in constant currency' not in text
+
+
+def test_parse_transcript_does_not_split_standalone_three_digit_growth_in_repair_mode() -> None:
+    parsed = parse_transcript(
+        (
+            "Amy Hood: Revenue was up 1815% in constant currency. Gross margin "
+            "dollars increased 1613% in constant currency. Operating income "
+            "increased 2016% in constant currency. AI services grew 100% in "
+            "constant currency. Security revenue grew 110% in constant currency. "
+            "New product revenue grew 150% in constant currency."
+        )
+    )
+
+    text = parsed['prepared_remarks'][0]['text']
+    assert 'up 18% and 15% in constant currency' in text
+    assert 'AI services grew 100% in constant currency' in text
+    assert 'Security revenue grew 110% in constant currency' in text
+    assert 'New product revenue grew 150% in constant currency' in text
+    assert '10% and 0% in constant currency' not in text
+    assert '11% and 10% in constant currency' not in text
+    assert '15% and 0% in constant currency' not in text
+    assert parsed['metadata']['text_repair_count'] == 3
 
 
 def test_via_ingest_raw(tmp_path) -> None:
