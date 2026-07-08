@@ -760,7 +760,25 @@ def compare_peers(
         elif editorial_peer_set is not None or peer_context is not None or metric is not None:
             try:
                 from utils.peer_resolver import PeerResolutionError, resolve_metric_peer_universe
-
+            except ImportError:
+                # utils.peer_resolver is monorepo-only and is not vendored into the
+                # standalone fmp-mcp wheel. Return the manual-peer hint instead of
+                # letting the ModuleNotFoundError surface as a NameError on the
+                # `except PeerResolutionError` clause below.
+                logger.warning(
+                    "Metric peer resolver unavailable for %s; provide peers manually",
+                    symbol,
+                    exc_info=True,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Metric-based peer resolution is unavailable for {symbol} in "
+                        "this deployment. Provide peers manually with the 'peers' "
+                        "parameter (e.g., peers='MSFT,GOOGL,META')."
+                    ),
+                }
+            try:
                 resolution = resolve_metric_peer_universe(
                     symbol,
                     editorial_peer_set,
