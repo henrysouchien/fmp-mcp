@@ -36,6 +36,61 @@ from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
 from .beta_guard import add_beta_warning
 
 
+_KNOWN_FX_CURRENCIES = frozenset({
+    "AED", "AUD", "BRL", "CAD", "CHF", "CNH", "CNY", "CZK", "DKK",
+    "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW",
+    "MXN", "MYR", "NOK", "NZD", "PHP", "PLN", "RUB", "SAR", "SEK",
+    "SGD", "THB", "TRY", "TWD", "USD", "VND", "ZAR",
+})
+
+
+def _historical_price_source_metadata(endpoint: str, symbol: str | None) -> dict[str, Any] | None:
+    """Describe the provider/basis of raw historical EOD rows."""
+    if endpoint != "historical_price_eod":
+        return None
+
+    metadata: dict[str, Any] = {
+        "provider": "Financial Modeling Prep",
+        "provider_slug": "fmp",
+        "provider_endpoint": "historical_price_eod",
+        "series_basis": "provider_end_of_day_market_close",
+        "price_adjustment": "unadjusted",
+        "basis_selectable": False,
+        "documentation_url": (
+            "https://site.financialmodelingprep.com/developer/docs"
+            "#historical-stock-price-end-of-day"
+        ),
+    }
+    normalized_symbol = str(symbol or "").strip().upper()
+    if len(normalized_symbol) != 6 or not normalized_symbol.isalpha():
+        return metadata
+
+    base_currency = normalized_symbol[:3]
+    quote_currency = normalized_symbol[3:]
+    if base_currency not in _KNOWN_FX_CURRENCIES or quote_currency not in _KNOWN_FX_CURRENCIES:
+        return metadata
+
+    metadata.update({
+        "instrument_type": "fx_pair",
+        "pair": f"{base_currency}/{quote_currency}",
+        "base_currency": base_currency,
+        "quote_currency": quote_currency,
+        "rate_semantics": "quote_currency_units_per_one_base_currency",
+        "fx_rate_basis": "fmp_market_data_end_of_day_close",
+        "not_equivalent_to": [
+            "official_central_bank_reference_rate",
+            "local_interbank_fixing",
+            "management_guidance_fx_assumption",
+        ],
+        "selection_guidance": (
+            "Use this series only when the requested basis is an FMP market-data close. "
+            "For an official, interbank, or management-guidance rate, use and cite the "
+            "corresponding authoritative source instead."
+        ),
+    })
+    return metadata
+
+
 def _error_response(
     error_type: str,
     message: str,
@@ -126,6 +181,9 @@ def fmp_fetch(
             - columns: List of column names (success only)
             - data: List of record dicts (success only, inline output)
             - file_path: CSV path (success only, file output)
+            - source_metadata: Provider and series-basis metadata for raw
+              historical_price_eod results, including FX pair direction and
+              explicit non-equivalence to official/interbank/guidance rates
             - error_type, message: Error details (error only)
 
     Examples:
@@ -185,6 +243,9 @@ def fmp_fetch(
             "row_count": len(records),
             "columns": list(df.columns),
         }
+        source_metadata = _historical_price_source_metadata(endpoint, symbol)
+        if source_metadata is not None:
+            response["source_metadata"] = source_metadata
         if columns:
             response["filtered_columns"] = filtered_columns
         if warnings:
