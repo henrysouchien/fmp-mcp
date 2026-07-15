@@ -246,11 +246,9 @@ register_endpoint(
         name="historical_price_eod",
         path="/historical-price-eod/full",
         description=(
-            "FMP-provided unadjusted end-of-day market closes and OHLCV data. "
+            "End-of-day historical prices (open, high, low, close, volume). "
             "Also supports FMP FX pair symbols such as USDTWD for historical "
-            "foreign-exchange close data. FX results are FMP market-data closes, "
-            "not official central-bank reference rates, local interbank fixings, "
-            "or management-guidance assumptions."
+            "foreign-exchange close data."
         ),
         fmp_docs_url="https://site.financialmodelingprep.com/developer/docs#historical-stock-price-end-of-day",
         category="prices",

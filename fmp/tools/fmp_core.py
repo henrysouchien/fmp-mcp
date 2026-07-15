@@ -34,6 +34,7 @@ from ..exceptions import (
 from ..registry import get_categories
 from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
 from .beta_guard import add_beta_warning
+from .vendor_lineage import build_vendor_response_descriptor
 
 
 _KNOWN_FX_CURRENCIES = frozenset({
@@ -242,6 +243,11 @@ def fmp_fetch(
             "params": params,
             "row_count": len(records),
             "columns": list(df.columns),
+            "lineage_descriptor": build_vendor_response_descriptor(
+                endpoint,
+                params,
+                records,
+            ),
         }
         source_metadata = _historical_price_source_metadata(endpoint, symbol)
         if source_metadata is not None:
