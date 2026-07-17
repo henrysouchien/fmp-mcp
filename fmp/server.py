@@ -181,6 +181,7 @@ def fmp_fetch(
     year: Optional[int] = None,
     quarter: Optional[int] = None,
     type: Optional[str] = None,
+    page: Optional[int] = None,
 ) -> dict:
     """
     Fetch data from any registered FMP endpoint.
@@ -219,6 +220,7 @@ def fmp_fetch(
         year: Fiscal year (for earnings_transcript endpoint).
         quarter: Quarter 1-4 (for earnings_transcript endpoint).
         type: Filing type filter (for sec_filings endpoint, e.g., "10-K", "10-Q").
+        page: Page number (for paginated endpoints such as mergers_acquisitions_rss).
 
     Returns:
         dict with status, endpoint, params, row_count, columns, and data (list of records).
@@ -251,6 +253,8 @@ def fmp_fetch(
         kwargs["quarter"] = quarter
     if type:
         kwargs["type"] = type
+    if page is not None:
+        kwargs["page"] = page
 
     parsed_columns = parse_list(columns)
 
@@ -913,6 +917,7 @@ def get_news(
     to_date: Optional[str] = None,
     format: Literal["summary", "full"] = "summary",
     quality: Literal["all", "trusted", "wire", "journalism"] = "trusted",
+    use_cache: bool = True,
 ) -> dict:
     """
     Fetch news articles for stocks or the broad market.
@@ -939,6 +944,7 @@ def get_news(
             - "wire": Official press releases only (BusinessWire, PR Newswire, etc.)
             - "journalism": Credible financial journalism only (WSJ, Bloomberg, etc.)
             - "all": No filtering — includes all sources
+        use_cache: Whether to use cached data (default: True). Set False for fresh data.
 
     Returns:
         News data with status field ("success" or "error").
@@ -958,6 +964,7 @@ def get_news(
         to_date=to_date,
         format=format,
         quality=quality,
+        use_cache=use_cache,
     )
 
 
