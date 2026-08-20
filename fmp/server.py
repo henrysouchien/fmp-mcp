@@ -1081,6 +1081,7 @@ def compare_peers(
     )
 
 
+@mcp.tool()
 def get_stock_fundamentals(
     symbol: str,
     include: Optional[str] = None,

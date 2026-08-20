@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -12,6 +13,7 @@ if str(ROOT) not in sys.path:
 from research_corpus.db import open_corpus_db
 from research_corpus.ingest import ingest_raw
 import research_corpus.validation as corpus_validation
+from fmp import file_residency
 from fmp.tools import transcripts
 from fmp.tools.transcripts import _build_transcript_body, parse_transcript
 
@@ -112,6 +114,29 @@ def test_parse_transcript_does_not_overwrite_explicit_role_with_ir_mention() -> 
     assert prepared_roles["Satya Nadella"] == "CEO"
     assert prepared_roles["Amy Hood"] == "CFO"
     assert qa_amy[0]["role"] == "CFO"
+
+
+def test_parse_transcript_preserves_period_delimited_payload_without_false_attribution() -> None:
+    content = (
+        "Operator. Welcome to the quarterly call. Elizabeth Shea. Thank you for "
+        "joining us. Robert Michael. Revenue grew during the quarter. Operator. "
+        "We will now begin questions. Chris Schott. Could you discuss the outlook?"
+    )
+
+    parsed = parse_transcript(content)
+
+    assert parsed["qa"] == []
+    assert parsed["qa_exchanges"] == []
+    assert parsed["prepared_remarks"] == [
+        {
+            "speaker": "Unknown",
+            "role": "Other",
+            "text": content,
+            "word_count": len(content.split()),
+        }
+    ]
+    assert parsed["metadata"]["speaker_parse_fallback"] == "unsegmented"
+    assert parsed["metadata"]["total_word_count"] == len(content.split())
 
 
 def test_parse_transcript_repairs_systematic_constant_currency_percent_fusions() -> None:
@@ -421,6 +446,87 @@ def test_get_earnings_transcript_filtered_file_is_scratch_when_env_enabled(
     finally:
         db.close()
     assert row['count'] == 0
+
+
+def test_file_residency_detects_sf_dataless_without_opening(monkeypatch) -> None:
+    dataless_flag = 0x40000000
+    monkeypatch.setattr(file_residency.stat, 'SF_DATALESS', dataless_flag, raising=False)
+    monkeypatch.setattr(
+        file_residency.Path,
+        'stat',
+        lambda _path: SimpleNamespace(st_flags=dataless_flag | 0x20),
+    )
+
+    assert file_residency.is_dataless_file('/corpus/placeholder.md') is True
+
+
+def test_get_earnings_transcript_refetches_dataless_cache_then_replaces_atomically(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_path = tmp_path / 'parsed.json'
+    placeholder = 'non-resident-placeholder-must-not-be-opened'
+    cache_path.write_text(placeholder, encoding='utf-8')
+    events: list[str] = []
+
+    class _Series:
+        def __init__(self, value):
+            self._value = value
+            self.iloc = self
+
+        def __getitem__(self, index):
+            assert index == 0
+            return self._value
+
+    class _Frame:
+        empty = False
+        columns = {'content', 'date'}
+
+        def __getitem__(self, key):
+            if key == 'content':
+                content = (
+                    'Operator: Welcome to the earnings call.\n'
+                    'Satya Nadella: ' + 'Cloud demand remained strong. ' * 30
+                )
+                return _Series(content)
+            if key == 'date':
+                return _Series('2025-01-29')
+            raise KeyError(key)
+
+    class _Client:
+        def fetch(self, endpoint, **kwargs):
+            assert endpoint == 'earnings_transcript'
+            assert kwargs == {'symbol': 'MSFT', 'year': 2025, 'quarter': 1}
+            assert cache_path.read_text(encoding='utf-8') == placeholder
+            events.append('fetch')
+            return _Frame()
+
+    original_atomic_write = transcripts.atomic_write_text
+
+    def record_atomic_write(path, content):
+        assert events == ['fetch']
+        events.append('atomic_write')
+        original_atomic_write(path, content)
+
+    monkeypatch.setattr(transcripts, '_get_cache_path', lambda *_args: cache_path)
+    monkeypatch.setattr(transcripts, 'is_dataless_file', lambda path: path == cache_path)
+    monkeypatch.setattr(transcripts, 'FMPClient', _Client)
+    monkeypatch.setattr(transcripts, 'atomic_write_text', record_atomic_write)
+
+    response = transcripts.get_earnings_transcript(
+        symbol='MSFT',
+        year=2025,
+        quarter=1,
+        section='prepared_remarks',
+        format='full',
+    )
+
+    assert response['status'] == 'success'
+    assert events == ['fetch', 'atomic_write']
+    cached = json.loads(cache_path.read_text(encoding='utf-8'))
+    assert cached['symbol'] == 'MSFT'
+    assert cached['year'] == 2025
+    assert cached['quarter'] == 1
 
 
 def _sample_result(

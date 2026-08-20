@@ -71,3 +71,7 @@ class FMPEmptyResponseError(FMPError):
         super().__init__(msg)
         self.endpoint = endpoint
         self.symbol = symbol
+
+
+class FMPDefinitionArtifactError(FMPError):
+    """Raised when pinned FMP definition evidence fails closed."""

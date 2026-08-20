@@ -3,6 +3,14 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.0] — 2026-08-20
+
+### Added
+- **`fmp/definitions.py`, `fmp/lineage.py`, and the `fmp/definition_artifacts/` data directory now ship in the published package.** They existed in the monorepo source but the sync had not been re-run since they landed, so the 0.4.4 artifact did not contain them.
+- The following names are now importable from `fmp`: `get_fmp_field_definition`, `FMPFieldDefinition`, `FMPFieldDefinitionAvailable`, `FMPFieldDefinitionUnavailable`, `FMPDefinitionArtifactError`, `fetch_with_lineage`, `FMPFetchResult`.
+
+All seven names were already declared in `fmp/__init__.py`'s `__all__` but were absent from the 0.4.4 artifact, so installed consumers raised `ImportError` — concretely `ai-excel-addin/api/research/fmp_definition_evidence.py`, which does `from fmp import get_fmp_field_definition`, could not import against a clean `pip install fmp-mcp`. A source/distribution parity test (`risk_module/tests/fmp/test_public_package_parity.py`) now fails on this class of drift.
+
 ## [0.4.1] — 2026-07-08
 
 ### Fixed

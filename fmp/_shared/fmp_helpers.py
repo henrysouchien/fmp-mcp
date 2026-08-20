@@ -3,37 +3,53 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from typing import Any, Optional
 
+from value_semantics_core import (
+    ForwardEpsEstimate,
+    ForwardPeAvailable,
+    Fy1ForwardPeriodAvailable,
+    derive_fy1_forward_pe,
+    select_fy1_forward_period,
+)
 
-def parse_fmp_float(value: Any) -> Optional[float]:
-    """Convert FMP numeric payload values into finite float values."""
-    if isinstance(value, bool):
+
+_FORWARD_PE_QUANTUM = Decimal("0.01")
+
+
+def parse_fmp_decimal(value: Any) -> Decimal | None:
+    """Convert an FMP numeric payload value into a finite ``Decimal``."""
+    if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        converted = float(value)
-        return converted if converted == converted else None  # NaN check
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
         wrapped_negative = text.startswith("(") and text.endswith(")")
-        cleaned = (
-            text.replace("%", "")
-            .replace(",", "")
-            .replace("(", "")
-            .replace(")", "")
-        )
-        if cleaned.startswith("+"):
-            cleaned = cleaned[1:]
+        text = text.replace("%", "").replace(",", "").replace("(", "").replace(")", "")
+        if text.startswith("+"):
+            text = text[1:]
         try:
-            converted = float(cleaned)
-            if wrapped_negative and converted > 0:
-                converted = -converted
-            return converted if converted == converted else None  # NaN check
-        except ValueError:
+            converted = Decimal(text)
+        except InvalidOperation:
             return None
-    return None
+        if wrapped_negative and converted > 0:
+            converted = -converted
+    elif isinstance(value, (int, float, Decimal)):
+        try:
+            converted = Decimal(str(value))
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    return converted if converted.is_finite() else None
+
+
+def parse_fmp_float(value: Any) -> Optional[float]:
+    """Convert FMP numeric payload values into finite float values."""
+    converted = parse_fmp_decimal(value)
+    return float(converted) if converted is not None else None
 
 
 def pick_value(record: dict[str, Any], *keys: str) -> Any:
@@ -56,46 +72,6 @@ def first_dataframe_record(dataframe: Any) -> dict[str, Any]:
     return first if isinstance(first, dict) else {}
 
 
-def _pick_fy1_estimate(
-    estimates: Any,
-    last_reported_fiscal_date: str | None = None,
-) -> dict[str, Any] | None:
-    """Pick the first analyst estimate row after the last reported fiscal date."""
-    parsed_cutoff: date
-    if last_reported_fiscal_date:
-        try:
-            parsed_cutoff = date.fromisoformat(str(last_reported_fiscal_date)[:10])
-        except ValueError:
-            parsed_cutoff = date.today()
-    else:
-        parsed_cutoff = date.today()
-
-    if isinstance(estimates, dict):
-        estimate_rows = [estimates]
-    elif isinstance(estimates, list):
-        estimate_rows = [row for row in estimates if isinstance(row, dict)]
-    else:
-        estimate_rows = []
-
-    dated_rows: list[tuple[date, dict[str, Any]]] = []
-    for row in estimate_rows:
-        raw_date = row.get("date")
-        if not raw_date:
-            continue
-        try:
-            fiscal_date = date.fromisoformat(str(raw_date)[:10])
-        except ValueError:
-            continue
-        dated_rows.append((fiscal_date, row))
-
-    for fiscal_date, row in sorted(dated_rows, key=lambda item: item[0]):
-        if fiscal_date <= parsed_cutoff:
-            continue
-        return row
-
-    return None
-
-
 def compute_forward_pe(
     current_price: Any,
     estimates: Any,
@@ -104,55 +80,88 @@ def compute_forward_pe(
     """Compute FY1 forward P/E from analyst estimates."""
     result = {
         "forward_pe": None,
-        "ntm_eps": None,
+        "fy1_eps": None,
+        "forward_pe_basis": "fy1",
         "pe_source": "unavailable",
         "analyst_count": None,
         "fiscal_period": None,
     }
 
-    price = parse_fmp_float(current_price)
-    if price is None or price <= 0:
-        return result
+    try:
+        fiscal_anchor = (
+            date.fromisoformat(str(last_reported_fiscal_date)[:10])
+            if last_reported_fiscal_date
+            else None
+        )
+    except ValueError:
+        fiscal_anchor = None
 
-    fy1 = _pick_fy1_estimate(estimates, last_reported_fiscal_date)
-    if fy1 is None:
-        return result
+    if isinstance(estimates, dict):
+        estimate_rows = [estimates]
+    elif isinstance(estimates, list):
+        estimate_rows = [row for row in estimates if isinstance(row, dict)]
+    else:
+        estimate_rows = []
 
-    eps_avg = parse_fmp_float(fy1.get("epsAvg"))
-    if eps_avg is None or eps_avg <= 0:
+    normalized_estimates: list[ForwardEpsEstimate] = []
+    for row in estimate_rows:
+        raw_period_end = row.get("date")
+        if not raw_period_end:
+            continue
+        try:
+            period_end = date.fromisoformat(str(raw_period_end)[:10])
+        except ValueError:
+            continue
+        eps = parse_fmp_decimal(row.get("epsAvg"))
+        if eps is None:
+            continue
+        analyst_count_decimal = parse_fmp_decimal(row.get("numAnalystsEps"))
+        analyst_count = (
+            int(analyst_count_decimal)
+            if analyst_count_decimal is not None
+            and analyst_count_decimal >= 0
+            and analyst_count_decimal == analyst_count_decimal.to_integral_value()
+            else None
+        )
+        normalized_estimates.append(
+            ForwardEpsEstimate(
+                period_end=period_end,
+                eps=eps,
+                analyst_count=analyst_count,
+            )
+        )
+
+    derived = derive_fy1_forward_pe(
+        price=parse_fmp_decimal(current_price),
+        estimates=normalized_estimates,
+        last_reported_period_end=fiscal_anchor,
+        quantum=_FORWARD_PE_QUANTUM,
+    )
+    if isinstance(derived, ForwardPeAvailable):
         return {
-            **result,
-            "pe_source": "negative_forward_earnings",
+            "forward_pe": float(derived.multiple),
+            "fy1_eps": float(derived.eps),
+            "forward_pe_basis": "fy1",
+            "pe_source": "forward",
+            "analyst_count": derived.analyst_count,
+            "fiscal_period": derived.estimate_period_end.isoformat(),
         }
 
+    fiscal_period = (
+        derived.estimate_period_end.isoformat()
+        if derived.estimate_period_end is not None
+        else None
+    )
     return {
-        "forward_pe": round(price / eps_avg, 2),
-        "ntm_eps": eps_avg,
-        "pe_source": "forward",
-        "analyst_count": fy1.get("numAnalystsEps"),
-        "fiscal_period": str(fy1.get("date"))[:10],
+        **result,
+        "fy1_eps": float(derived.eps) if derived.eps is not None else None,
+        "pe_source": (
+            "negative_forward_earnings"
+            if derived.reason == "non_positive_eps"
+            else "unavailable"
+        ),
+        "fiscal_period": fiscal_period,
     }
-
-
-def compute_forward_ev_ebitda(
-    enterprise_value: Any,
-    estimates: Any,
-    last_reported_fiscal_date: str | None = None,
-) -> float | None:
-    """Compute FY1 forward EV/EBITDA from analyst estimates."""
-    ev = parse_fmp_float(enterprise_value)
-    if ev is None or ev <= 0:
-        return None
-
-    fy1 = _pick_fy1_estimate(estimates, last_reported_fiscal_date)
-    if fy1 is None:
-        return None
-
-    ebitda_avg = parse_fmp_float(fy1.get("ebitdaAvg"))
-    if ebitda_avg is None or ebitda_avg <= 0:
-        return None
-
-    return round(ev / ebitda_avg, 2)
 
 
 def compute_forward_ev_sales(
@@ -161,19 +170,51 @@ def compute_forward_ev_sales(
     last_reported_fiscal_date: str | None = None,
 ) -> float | None:
     """Compute FY1 forward EV/Sales from analyst revenue estimates."""
-    ev = parse_fmp_float(enterprise_value)
-    if ev is None or ev <= 0:
+    ev = parse_fmp_decimal(enterprise_value)
+    if ev is None or ev <= 0 or not last_reported_fiscal_date:
         return None
-
-    fy1 = _pick_fy1_estimate(estimates, last_reported_fiscal_date)
-    if fy1 is None:
+    try:
+        fiscal_anchor = date.fromisoformat(str(last_reported_fiscal_date)[:10])
+    except ValueError:
         return None
-
-    revenue_avg = parse_fmp_float(fy1.get("revenueAvg"))
+    if isinstance(estimates, dict):
+        estimate_rows = [estimates]
+    elif isinstance(estimates, list):
+        estimate_rows = [row for row in estimates if isinstance(row, dict)]
+    else:
+        estimate_rows = []
+    dated_rows: list[tuple[date, dict[str, Any]]] = []
+    for row in estimate_rows:
+        raw_date = row.get("date")
+        if not raw_date:
+            continue
+        try:
+            period_end = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            continue
+        dated_rows.append((period_end, row))
+    selection = select_fy1_forward_period(
+        period_ends=tuple(period_end for period_end, _row in dated_rows),
+        last_reported_period_end=fiscal_anchor,
+    )
+    if not isinstance(selection, Fy1ForwardPeriodAvailable):
+        return None
+    fy1 = next(
+        row for period_end, row in dated_rows if period_end == selection.period_end
+    )
+    revenue_avg = parse_fmp_decimal(fy1.get("revenueAvg"))
     if revenue_avg is None or revenue_avg <= 0:
         return None
-
-    return round(ev / revenue_avg, 2)
+    with localcontext() as context:
+        context.prec = max(
+            28,
+            len(ev.as_tuple().digits) + len(revenue_avg.as_tuple().digits) + 8,
+        )
+        multiple = (ev / revenue_avg).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_EVEN,
+        )
+    return float(multiple)
 
 
 def _get_last_reported_fiscal_date(fmp_client: Any, ticker: str) -> str | None:
@@ -189,7 +230,9 @@ def _get_last_reported_fiscal_date(fmp_client: Any, ticker: str) -> str | None:
     return str(raw_date)[:10] if raw_date else None
 
 
-def fetch_forward_pe(fmp_client: Any, ticker: str, current_price: Any) -> dict[str, Any]:
+def fetch_forward_pe(
+    fmp_client: Any, ticker: str, current_price: Any
+) -> dict[str, Any]:
     """Fetch analyst data and compute forward P/E."""
     last_reported_fiscal_date = _get_last_reported_fiscal_date(fmp_client, ticker)
     estimates_df = fmp_client.fetch(
@@ -202,9 +245,7 @@ def fetch_forward_pe(fmp_client: Any, ticker: str, current_price: Any) -> dict[s
         estimate_records: list[dict[str, Any]] = []
     elif hasattr(estimates_df, "empty"):
         estimate_records = (
-            estimates_df.to_dict("records")
-            if not estimates_df.empty
-            else []
+            estimates_df.to_dict("records") if not estimates_df.empty else []
         )
     elif isinstance(estimates_df, list):
         estimate_records = [row for row in estimates_df if isinstance(row, dict)]

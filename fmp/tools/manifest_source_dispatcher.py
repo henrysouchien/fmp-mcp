@@ -4,15 +4,41 @@ from __future__ import annotations
 
 import ast
 import operator
+import re
+from collections.abc import Callable
 from datetime import date
+from enum import Enum
 from types import SimpleNamespace
 from typing import Any, NamedTuple
+
+
+class MetricProvenance(str, Enum):
+    FINANCIAL = "financial"
+    TRANSCRIPT = "transcript"
+
+
+def union_metric_provenance(
+    *provenance_sets: frozenset[MetricProvenance],
+) -> frozenset[MetricProvenance]:
+    return frozenset(
+        provenance
+        for provenance_set in provenance_sets
+        for provenance in provenance_set
+    )
+
+
+_FINANCIAL_PROVENANCE = frozenset({MetricProvenance.FINANCIAL})
+_TRANSCRIPT_PROVENANCE = frozenset({MetricProvenance.TRANSCRIPT})
 
 
 class DispatchResult(NamedTuple):
     value: Any
     source_endpoint: str | None
     source_meta: dict[str, Any] | None
+    provenance: frozenset[MetricProvenance] = frozenset()
+
+
+NativeBindingResolver = Callable[[str, str], tuple[tuple[str, str], ...]]
 
 
 _FIELD_ALIASES: dict[tuple[str, str], tuple[str, ...]] = {
@@ -40,8 +66,6 @@ _ANALYST_FIELD_MAP: dict[str, tuple[str, int]] = {
     "estimatedEpsAvg_fy1": ("epsAvg", 1),
     "estimatedEpsAvg_fy2": ("epsAvg", 2),
     "estimatedEpsAvg_fy3": ("epsAvg", 3),
-    "estimatedRevenueAvg_ntm": ("revenueAvg", 1),
-    "estimatedEbitdaAvg_ntm": ("ebitdaAvg", 1),
 }
 
 _BINARY_OPERATORS = {
@@ -63,19 +87,41 @@ def dispatch_source_binding(
     focal_ticker: str,
     *,
     resolved_metrics: dict[str, Any] | None = None,
+    resolved_provenance: dict[str, frozenset[MetricProvenance]] | None = None,
     metric_key: str | None = None,
     resolving: set[str] | None = None,
     fiscal_year: int | None = None,
     kpi_registry: Any | None = None,
+    metric_numeric_kind: str | None = None,
+    native_binding_resolver: NativeBindingResolver | None = None,
 ) -> DispatchResult:
     """Resolve one manifest source binding against raw per-endpoint payloads."""
 
     kind = _binding_attr(binding, "kind")
+    if kind in {"concept", "metric"}:
+        canonical_id = _require_binding_value(
+            binding,
+            f"{kind}_id",
+            f"{kind} source requires {kind}_id",
+        )
+        if native_binding_resolver is None:
+            raise ValueError(
+                f"{kind} source requires a provider-native binding resolver"
+            )
+        return _dispatch_canonical_binding(
+            kind,
+            canonical_id,
+            fmp_response_bundle,
+            metric_key=metric_key,
+            fiscal_year=fiscal_year,
+            native_binding_resolver=native_binding_resolver,
+        )
+
     if kind == "fmp_endpoint":
         endpoint = _binding_attr(binding, "fmp_endpoint")
         field = _binding_attr(binding, "fmp_field")
         if not endpoint or not field:
-            return DispatchResult(None, None, None)
+            return DispatchResult(None, None, None, frozenset())
         return DispatchResult(
             _extract_fmp_endpoint_value(
                 str(endpoint),
@@ -84,22 +130,26 @@ def dispatch_source_binding(
             ),
             str(endpoint),
             None,
+            _FINANCIAL_PROVENANCE,
         )
 
     if kind == "derived":
         formula = _binding_attr(binding, "derived_formula")
         if not formula:
-            return DispatchResult(None, None, None)
+            return DispatchResult(None, None, None, frozenset())
+        value, provenance = _evaluate_derived_formula(
+            str(formula),
+            fmp_response_bundle,
+            resolved_metrics or {},
+            resolved_provenance or {},
+            metric_key=metric_key,
+            resolving=resolving or set(),
+        )
         return DispatchResult(
-            _evaluate_derived_formula(
-                str(formula),
-                fmp_response_bundle,
-                resolved_metrics or {},
-                metric_key=metric_key,
-                resolving=resolving or set(),
-            ),
+            value,
             None,
             None,
+            provenance,
         )
 
     if kind == "kpi":
@@ -138,10 +188,13 @@ def dispatch_source_binding(
             fmp_response_bundle,
             focal_ticker,
             resolved_metrics=resolved_metrics,
+            resolved_provenance=resolved_provenance,
             metric_key=metric_key,
             resolving=resolving,
             fiscal_year=fiscal_year,
             kpi_registry=kpi_registry,
+            metric_numeric_kind=metric_numeric_kind,
+            native_binding_resolver=native_binding_resolver,
         )
 
     if kind == "edgar_concept":
@@ -167,7 +220,12 @@ def dispatch_source_binding(
             "retrieved_at": retrieved_at,
             "raw_payload": raw_payload,
         }
-        return DispatchResult(value, f"edgar_concept:{concept}", source_meta)
+        return DispatchResult(
+            value,
+            f"edgar_concept:{concept}",
+            source_meta,
+            _FINANCIAL_PROVENANCE,
+        )
 
     if kind == "transcript_kpi":
         _require_fiscal_year(fiscal_year, str(kind))
@@ -195,6 +253,8 @@ def dispatch_source_binding(
                 int(fiscal_year),
             )
         )
+        if metric_numeric_kind == "percentage" and value is not None:
+            value = value * 0.01
         source_meta = None
         if value is not None and isinstance(raw_payload, dict):
             source_meta = {
@@ -204,9 +264,86 @@ def dispatch_source_binding(
                 "matched_excerpt": raw_payload.get("matched_excerpt"),
                 "retrieved_at": retrieved_at,
             }
-        return DispatchResult(value, f"transcript_kpi:{kpi_key}", source_meta)
+        return DispatchResult(
+            value,
+            f"transcript_kpi:{kpi_key}",
+            source_meta,
+            _TRANSCRIPT_PROVENANCE,
+        )
 
     raise ValueError(f"unsupported comps source kind: {kind}")
+
+
+def _dispatch_canonical_binding(
+    kind: str,
+    canonical_id: str,
+    bundle: dict[str, Any],
+    *,
+    metric_key: str | None,
+    fiscal_year: int | None,
+    native_binding_resolver: NativeBindingResolver,
+) -> DispatchResult:
+    native_bindings = tuple(native_binding_resolver(kind, canonical_id))
+    normalized: list[tuple[str, str]] = []
+    for binding in native_bindings:
+        if not isinstance(binding, (tuple, list)) or len(binding) != 2:
+            raise ValueError(
+                f"invalid provider-native binding for {kind}:{canonical_id}"
+            )
+        endpoint, field = (str(value or "").strip() for value in binding)
+        if not endpoint or not field:
+            raise ValueError(
+                f"invalid provider-native binding for {kind}:{canonical_id}"
+            )
+        normalized.append((endpoint, field))
+    if not normalized:
+        raise ValueError(
+            f"provider-native binding not found for {kind}:{canonical_id}"
+        )
+
+    ordered = sorted(
+        enumerate(normalized),
+        key=lambda item: _native_binding_priority(
+            item[1],
+            original_index=item[0],
+            metric_key=metric_key,
+            fiscal_year=fiscal_year,
+        ),
+    )
+    for _index, (endpoint, field) in ordered:
+        value = _extract_fmp_endpoint_value(endpoint, field, bundle)
+        if value is not None:
+            return DispatchResult(value, endpoint, None, _FINANCIAL_PROVENANCE)
+    return DispatchResult(
+        None,
+        ordered[0][1][0],
+        None,
+        _FINANCIAL_PROVENANCE,
+    )
+
+
+def _native_binding_priority(
+    binding: tuple[str, str],
+    *,
+    original_index: int,
+    metric_key: str | None,
+    fiscal_year: int | None,
+) -> tuple[int, int, int]:
+    endpoint, field = binding
+    horizon = _metric_key_horizon(metric_key)
+    horizon_penalty = (
+        0
+        if horizon is None or f"_fy{horizon}" in field.lower()
+        else 1
+    )
+    is_ttm = endpoint.lower().endswith("_ttm")
+    period_penalty = int(is_ttm) if fiscal_year is not None else int(not is_ttm)
+    return horizon_penalty, period_penalty, original_index
+
+
+def _metric_key_horizon(metric_key: str | None) -> int | None:
+    match = re.search(r"(?:^|_)fy([1-9][0-9]*)(?:_|$)", str(metric_key or "").lower())
+    return int(match.group(1)) if match else None
 
 
 def _binding_attr(binding: Any, key: str) -> Any:
@@ -385,14 +522,13 @@ def _evaluate_derived_formula(
     formula: str,
     bundle: dict[str, Any],
     resolved_metrics: dict[str, Any],
+    resolved_provenance: dict[str, frozenset[MetricProvenance]],
     *,
     metric_key: str | None,
     resolving: set[str],
-) -> Any:
+) -> tuple[Any, frozenset[MetricProvenance]]:
     expression = ast.parse(formula, mode="eval")
-    referenced_names = {
-        node.id for node in ast.walk(expression) if isinstance(node, ast.Name)
-    }
+    referenced_names = ast_referenced_names(expression)
     if metric_key and metric_key in referenced_names:
         raise ValueError(f"cyclic derived metric dependency: {metric_key}")
     cyclic = referenced_names.intersection(resolving)
@@ -402,10 +538,34 @@ def _evaluate_derived_formula(
     variables = _raw_endpoint_variables(bundle)
     variables.update(resolved_metrics)
     variables.setdefault("price", _first_record(bundle.get("profile")).get("price"))
+    provenance_by_name = _raw_endpoint_provenance(bundle)
+    provenance_by_name.update(
+        {
+            name: resolved_provenance.get(name, frozenset())
+            for name in resolved_metrics
+        }
+    )
+    provenance_by_name.setdefault("price", _FINANCIAL_PROVENANCE)
+    provenance = union_metric_provenance(
+        *(
+            provenance_by_name[name]
+            for name in referenced_names
+            if name in provenance_by_name
+        )
+    )
     try:
-        return _eval_ast(expression.body, variables)
+        return _eval_ast(expression.body, variables), provenance
     except (TypeError, ValueError, ZeroDivisionError, OverflowError):
-        return None
+        return None, provenance
+
+
+def ast_referenced_names(expression: ast.AST | str) -> frozenset[str]:
+    """Return the names consumed by the derived-formula evaluator."""
+
+    parsed = ast.parse(expression, mode="eval") if isinstance(expression, str) else expression
+    return frozenset(
+        node.id for node in ast.walk(parsed) if isinstance(node, ast.Name)
+    )
 
 
 def _raw_endpoint_variables(bundle: dict[str, Any]) -> dict[str, Any]:
@@ -423,6 +583,25 @@ def _raw_endpoint_variables(bundle: dict[str, Any]) -> dict[str, Any]:
             if endpoint_field.isidentifier():
                 variables[endpoint_field] = value
     return variables
+
+
+def _raw_endpoint_provenance(
+    bundle: dict[str, Any],
+) -> dict[str, frozenset[MetricProvenance]]:
+    provenance_by_name: dict[str, frozenset[MetricProvenance]] = {}
+    for endpoint, payload in bundle.items():
+        if str(endpoint).startswith("_"):
+            continue
+        row = _first_record(payload)
+        endpoint_prefix = str(endpoint).replace("-", "_")
+        for field in row:
+            field_name = str(field)
+            if field_name.isidentifier():
+                provenance_by_name.setdefault(field_name, _FINANCIAL_PROVENANCE)
+            endpoint_field = f"{endpoint_prefix}__{field_name}"
+            if endpoint_field.isidentifier():
+                provenance_by_name[endpoint_field] = _FINANCIAL_PROVENANCE
+    return provenance_by_name
 
 
 def _eval_ast(node: ast.AST, variables: dict[str, Any]) -> float:
@@ -452,4 +631,9 @@ def _eval_ast(node: ast.AST, variables: dict[str, Any]) -> float:
     raise ValueError(f"unsupported derived expression: {type(node).__name__}")
 
 
-__all__ = ["DispatchResult", "dispatch_source_binding"]
+__all__ = [
+    "DispatchResult",
+    "MetricProvenance",
+    "dispatch_source_binding",
+    "union_metric_provenance",
+]

@@ -21,6 +21,9 @@ import requests as _requests
 DEFAULT_ESTIMATE_API_URL = "https://www.edgarparser.com"
 ESTIMATE_API_URL = os.getenv("ESTIMATE_API_URL", DEFAULT_ESTIMATE_API_URL)
 ESTIMATE_API_KEY = os.getenv("EDGAR_API_KEY")
+# The full-universe /api/estimates/revision-summary call measured 26.1s on
+# 2026-07-16; a 15s timeout caused daily read timeouts starting 2026-07-08.
+_REQUEST_TIMEOUT_SECONDS = 60
 MISSING_API_URL_ERROR = (
     "ESTIMATE_API_URL environment variable is required. "
     f"Set it to the hosted estimates API URL (e.g. {DEFAULT_ESTIMATE_API_URL})."
@@ -44,7 +47,7 @@ def get(
         cost_per_call=0,
         fn=_requests.get,
         args=(f"{ESTIMATE_API_URL}{path}",),
-        kwargs={"params": request_params, "timeout": 15},
+        kwargs={"params": request_params, "timeout": _REQUEST_TIMEOUT_SECONDS},
     )
     response.raise_for_status()
     return response.json()

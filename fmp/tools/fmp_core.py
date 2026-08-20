@@ -34,7 +34,6 @@ from ..exceptions import (
 from ..registry import get_categories
 from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
 from .beta_guard import add_beta_warning
-from .vendor_lineage import build_vendor_response_descriptor
 
 
 _KNOWN_FX_CURRENCIES = frozenset({
@@ -216,7 +215,12 @@ def fmp_fetch(
 
     try:
         client = get_client()
-        df = client.fetch(endpoint, use_cache=use_cache, **params)
+        fetch_result = client.fetch_with_lineage(
+            endpoint,
+            use_cache=use_cache,
+            **params,
+        )
+        df = fetch_result.dataframe
 
         # Enforce limit client-side (some APIs ignore the limit param)
         if effective_limit and len(df) > effective_limit:
@@ -241,13 +245,12 @@ def fmp_fetch(
             "status": "success",
             "endpoint": endpoint,
             "params": params,
+            "validated_params": dict(fetch_result.validated_params),
+            "fetch_source": fetch_result.source,
+            "observed_at": fetch_result.observed_at.isoformat(),
             "row_count": len(records),
             "columns": list(df.columns),
-            "lineage_descriptor": build_vendor_response_descriptor(
-                endpoint,
-                params,
-                records,
-            ),
+            "lineage_descriptor": dict(fetch_result.lineage_descriptor),
         }
         source_metadata = _historical_price_source_metadata(endpoint, symbol)
         if source_metadata is not None:
@@ -672,8 +675,11 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
     try:
         resolved_symbol = _resolve_symbol_alias(symbol, ticker)
         client = get_client()
-        df = client.fetch("profile", symbol=resolved_symbol)
-        records = df.to_dict(orient="records")
+        fetch_result = client.fetch_with_lineage(
+            "profile",
+            symbol=resolved_symbol,
+        )
+        records = fetch_result.records
 
         # Profile returns a list with single item
         profile = add_beta_warning(records[0]) if records else {}
@@ -682,6 +688,10 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
             "status": "success",
             "symbol": resolved_symbol,
             "profile": profile,
+            "validated_params": dict(fetch_result.validated_params),
+            "fetch_source": fetch_result.source,
+            "observed_at": fetch_result.observed_at.isoformat(),
+            "lineage_descriptor": dict(fetch_result.lineage_descriptor),
         }
 
     except Exception as e:

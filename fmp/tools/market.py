@@ -722,7 +722,7 @@ def _fetch_symbol_pe_comparison(
     format: str,
     use_cache: bool,
 ) -> dict:
-    """Compare per-symbol TTM P/E against sector/industry benchmark P/E."""
+    """Compare per-symbol FY1-or-TTM P/E against a TTM benchmark P/E."""
     normalized_symbols: list[str] = []
     for symbol in symbols:
         if symbol is None:
@@ -867,9 +867,21 @@ def _fetch_symbol_pe_comparison(
         if stock_pe is None:
             stock_pe = fallback_ttm_pe
 
+        uses_forward_pe = forward_pe_result.get("forward_pe") is not None
+        stock_pe_basis = (
+            "fy1"
+            if uses_forward_pe
+            else "ttm"
+            if fallback_ttm_pe is not None
+            else None
+        )
+        stock_pe_fiscal_period = (
+            forward_pe_result.get("fiscal_period") if uses_forward_pe else None
+        )
+
         pe_source = (
             "forward"
-            if forward_pe_result.get("forward_pe") is not None
+            if uses_forward_pe
             else "ttm"
             if fallback_ttm_pe is not None
             else forward_pe_result.get("pe_source")
@@ -891,6 +903,8 @@ def _fetch_symbol_pe_comparison(
             "sector": sector_name,
             "industry": industry_name,
             "stock_pe": stock_pe,
+            "stock_pe_basis": stock_pe_basis,
+            "stock_pe_fiscal_period": stock_pe_fiscal_period,
             "pe_source": pe_source,
             "benchmark_pe": benchmark_pe,
             "benchmark_pe_source": "ttm",

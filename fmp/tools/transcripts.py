@@ -33,15 +33,16 @@ import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
+from ..file_residency import is_dataless_file
 from ._file_output import _cache_base, atomic_write_text
 
 # Parser version for cache invalidation. Bump when parsing logic changes.
 # Included in cache filename so old caches are naturally bypassed.
-PARSER_VERSION = 7
+PARSER_VERSION = 8
 
 # False positive speaker names to ignore (these appear as "Note:", "Source:", etc.)
 FALSE_POSITIVE_SPEAKERS = frozenset({
@@ -615,6 +616,19 @@ def parse_transcript(content: str) -> dict:
     content = _normalize_content(content)
     content, text_repairs = _repair_constant_currency_percent_fusions(content)
     segments = parse_speakers(content)
+    unsegmented_fallback = False
+    if not segments and content.strip():
+        # Some current FMP payloads flatten every speaker turn into one
+        # period-delimited line. Preserve the complete transcript without
+        # inventing speaker attribution; a later parser can refine it.
+        segments = [
+            {
+                "speaker": "Unknown",
+                "text": content.strip(),
+                "line_index": 0,
+            }
+        ]
+        unsegmented_fallback = True
     qa_boundary = find_qa_boundary(segments)
     classify_roles(segments, qa_boundary)
 
@@ -680,6 +694,8 @@ def parse_transcript(content: str) -> dict:
         metadata["text_repair_count"] = len(text_repairs)
         metadata["text_repair_types"] = sorted({repair["type"] for repair in text_repairs})
         metadata["text_repair_examples"] = text_repairs[:5]
+    if unsegmented_fallback:
+        metadata["speaker_parse_fallback"] = "unsegmented"
 
     return {
         "prepared_remarks": prepared_remarks,
@@ -1199,7 +1215,7 @@ def get_earnings_transcript(
             return {"status": "error", "error": f"year must be between 2000 and {year_max}"}
 
         cache_path = _get_cache_path(symbol, year, quarter)
-        if cache_path.is_file():
+        if cache_path.is_file() and not is_dataless_file(cache_path):
             with open(cache_path) as f:
                 parsed = json.load(f)
         else:
@@ -1234,9 +1250,8 @@ def get_earnings_transcript(
             parsed["quarter"] = quarter
             parsed["date"] = str(df["date"].iloc[0])[:10] if "date" in df.columns else ""
 
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w") as f:
-                json.dump(parsed, f)
+            serialized = json.dumps(parsed)
+            atomic_write_text(cache_path, serialized)
 
         result = _apply_filters(
             parsed,

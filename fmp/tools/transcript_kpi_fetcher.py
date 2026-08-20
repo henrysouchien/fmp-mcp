@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 from fmp.tools.transcripts import get_earnings_transcript
 
@@ -132,10 +132,10 @@ def _collect_strings(value: Any, parts: list[str]) -> None:
             _collect_strings(child, parts)
 
 
-def _match_value(match: re.Match[str]) -> str:
+def _match_value(match: re.Match[str]) -> re.Match[str] | str:
     groupdict = match.groupdict()
     if groupdict.get("value") is not None:
-        return groupdict["value"]
+        return match
     for value in match.groups():
         if value is not None:
             return value
@@ -150,13 +150,37 @@ def _parse_numeric(value: Any) -> float | None:
         return None
     if isinstance(value, int | float):
         return float(value)
+    groupdict: Mapping[str, Any] = {}
+    if hasattr(value, "groupdict"):
+        groupdict = value.groupdict()
+        value = groupdict.get("value")
+    elif isinstance(value, Mapping):
+        groupdict = value
+        value = groupdict.get("value")
+    if value is None:
+        return None
     text = str(value).strip().replace(",", "")
     if text.endswith("%"):
         text = text[:-1].strip()
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         return None
+    scale_factors = {
+        "thousand": 1e3,
+        "million": 1e6,
+        "billion": 1e9,
+        "trillion": 1e12,
+    }
+    scale = str(groupdict.get("scale") or "").lower()
+    number *= scale_factors.get(scale, 1.0)
+    has_close = any(
+        groupdict.get(name)
+        for name in ("neg_close", "close_inner", "close_outer")
+    )
+    if groupdict.get("neg_open") and has_close:
+        number = -abs(number)
+    return number
 
 
 def _sentence_excerpt(text: str, start: int, end: int) -> str:

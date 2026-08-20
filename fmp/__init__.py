@@ -49,10 +49,17 @@ Available Endpoints:
     - analyst: analyst_estimates, price_target
 """
 
-from .client import FMPClient, fetch, get_client
+from .client import FMPClient, fetch, fetch_with_lineage, get_client
+from .definitions import (
+    FMPFieldDefinition,
+    FMPFieldDefinitionAvailable,
+    FMPFieldDefinitionUnavailable,
+    get_fmp_field_definition,
+)
 from .exceptions import (
     FMPAPIError,
     FMPAuthenticationError,
+    FMPDefinitionArtifactError,
     FMPEmptyResponseError,
     FMPEndpointError,
     FMPError,
@@ -69,16 +76,25 @@ from .registry import (
     list_endpoints,
     register_endpoint,
 )
+from .lineage import FMPFetchResult
 
 __all__ = [
     # Client
     "FMPClient",
+    "FMPFetchResult",
     "fetch",
+    "fetch_with_lineage",
     "get_client",
+    # Definition evidence
+    "FMPFieldDefinition",
+    "FMPFieldDefinitionAvailable",
+    "FMPFieldDefinitionUnavailable",
+    "get_fmp_field_definition",
     # Exceptions
     "FMPError",
     "FMPAPIError",
     "FMPAuthenticationError",
+    "FMPDefinitionArtifactError",
     "FMPEmptyResponseError",
     "FMPEndpointError",
     "FMPRateLimitError",

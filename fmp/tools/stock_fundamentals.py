@@ -19,7 +19,6 @@ from ._helpers import _last_trading_day
 from .technical import get_technical_analysis
 from fmp._shared.fmp_helpers import (
     _get_last_reported_fiscal_date,
-    compute_forward_ev_ebitda,
     compute_forward_ev_sales,
     compute_forward_pe,
     parse_fmp_float,
@@ -296,7 +295,6 @@ def _build_valuation(
     key_metrics: Any,
     forward_pe_result: dict[str, Any],
     sector_pe: float | None,
-    forward_ev_ebitda: float | None = None,
     forward_ev_sales: float | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Build the valuation section."""
@@ -323,9 +321,18 @@ def _build_valuation(
         if pe_ratio_ttm is not None:
             section["pe_ratio_ttm"] = pe_ratio_ttm
 
-        ntm_eps = parse_fmp_float(forward_pe_result.get("ntm_eps"))
-        if ntm_eps is not None and math.isfinite(ntm_eps):
-            section["ntm_eps"] = ntm_eps
+        fy1_eps = parse_fmp_float(forward_pe_result.get("fy1_eps"))
+        if fy1_eps is not None and math.isfinite(fy1_eps):
+            section["fy1_eps"] = fy1_eps
+
+        fiscal_period = forward_pe_result.get("fiscal_period")
+        if fiscal_period is not None:
+            section["fiscal_period"] = str(fiscal_period)
+
+        if forward_pe is not None or fiscal_period is not None:
+            section["forward_pe_basis"] = str(
+                forward_pe_result.get("forward_pe_basis") or "fy1"
+            )
 
         analyst_count = forward_pe_result.get("analyst_count")
         if analyst_count is not None:
@@ -368,24 +375,20 @@ def _build_valuation(
                 section["peg_ratio"] = ttm_peg
                 section["peg_source"] = "ttm"
 
-        if forward_ev_ebitda is not None:
-            section["ev_ebitda"] = forward_ev_ebitda
-            section["ev_ebitda_source"] = "FY1"
-        else:
+        ev_ebitda_ttm = _parse_metric(
+            ratios_row,
+            "enterpriseValueMultipleTTM",
+            "evToEbitdaTTM",
+        )
+        if ev_ebitda_ttm is None and key_metrics_row:
             ev_ebitda_ttm = _parse_metric(
-                ratios_row,
+                key_metrics_row,
                 "enterpriseValueMultipleTTM",
                 "evToEbitdaTTM",
             )
-            if ev_ebitda_ttm is None and key_metrics_row:
-                ev_ebitda_ttm = _parse_metric(
-                    key_metrics_row,
-                    "enterpriseValueMultipleTTM",
-                    "evToEbitdaTTM",
-                )
-            if ev_ebitda_ttm is not None:
-                section["ev_ebitda"] = ev_ebitda_ttm
-                section["ev_ebitda_source"] = "ttm"
+        if ev_ebitda_ttm is not None:
+            section["ev_ebitda"] = ev_ebitda_ttm
+            section["ev_ebitda_source"] = "ttm"
 
         if forward_ev_sales is not None:
             section["ev_sales"] = forward_ev_sales
@@ -853,7 +856,8 @@ def get_stock_fundamentals(
 
         forward_pe_result = {
             "forward_pe": None,
-            "ntm_eps": None,
+            "fy1_eps": None,
+            "forward_pe_basis": "fy1",
             "pe_source": "unavailable",
             "analyst_count": None,
             "fiscal_period": None,
@@ -868,7 +872,6 @@ def get_stock_fundamentals(
                 raw_results.get("last_reported_fiscal_date"),
             )
 
-        forward_ev_ebitda: float | None = None
         forward_ev_sales: float | None = None
         if "valuation" in requested_sections:
             ratios_row = _first_record(raw_results.get("ratios"))
@@ -882,11 +885,6 @@ def get_stock_fundamentals(
                 )
 
             last_reported = raw_results.get("last_reported_fiscal_date")
-            forward_ev_ebitda = compute_forward_ev_ebitda(
-                enterprise_value,
-                estimates,
-                last_reported,
-            )
             forward_ev_sales = compute_forward_ev_sales(
                 enterprise_value,
                 estimates,
@@ -945,7 +943,6 @@ def get_stock_fundamentals(
                     raw_results.get("key_metrics"),
                     forward_pe_result,
                     sector_pe,
-                    forward_ev_ebitda,
                     forward_ev_sales,
                 )
                 section_warnings.extend(builder_warnings)

@@ -20,19 +20,12 @@ import os
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import requests
-from dotenv import load_dotenv
-
-try:
-    from app_platform.api_budget import guard_call
-except ImportError:
-    def guard_call(*, fn, args=(), kwargs=None, **_):
-        """No-op fallback when app_platform.api_budget isn't installed (dist runtime)."""
-        return fn(*args, **(kwargs or {}))
 
 from .cache import FMPCache, get_cache
 from .exceptions import (
@@ -43,6 +36,12 @@ from .exceptions import (
     FMPRateLimitError,
     FMPValidationError,
 )
+from .lineage import (
+    FMPFetchResult,
+    build_vendor_request_sha256,
+    build_vendor_response_descriptor,
+    dataframe_records,
+)
 from .registry import (
     CacheRefresh,
     FMPEndpoint,
@@ -51,8 +50,27 @@ from .registry import (
     list_endpoints as registry_list_endpoints,
 )
 
-# Load environment
-load_dotenv()
+@lru_cache(maxsize=1)
+def _resolve_guard_call():
+    """Resolve the monorepo budget guard only when a request is dispatched."""
+    try:
+        from app_platform.api_budget import guard_call as platform_guard_call
+    except ImportError:
+        return None
+    return platform_guard_call
+
+
+def guard_call(*, fn, args=(), kwargs=None, **guard_kwargs):
+    """Run through the budget guard when available, otherwise call directly."""
+    platform_guard_call = _resolve_guard_call()
+    if platform_guard_call is None:
+        return fn(*args, **(kwargs or {}))
+    return platform_guard_call(
+        fn=fn,
+        args=args,
+        kwargs=kwargs,
+        **guard_kwargs,
+    )
 
 
 def _get_month_token() -> str:
@@ -78,6 +96,47 @@ def _extract_by_path(data: dict, path: str) -> Any:
         else:
             return None
     return result
+
+
+def _normalize_response(
+    endpoint: FMPEndpoint,
+    endpoint_name: str,
+    data: list | dict,
+    *,
+    allow_empty: bool = False,
+) -> pd.DataFrame:
+    """Normalize one provider response according to its endpoint contract."""
+
+    if isinstance(data, dict):
+        if endpoint.response_path:
+            extracted = _extract_by_path(data, endpoint.response_path)
+            if extracted is not None:
+                data = extracted
+            else:
+                import warnings
+
+                warnings.warn(
+                    f"response_path '{endpoint.response_path}' not found in response for "
+                    f"endpoint '{endpoint_name}'. Trying fallbacks.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        if isinstance(data, dict):
+            if "historical" in data:
+                data = data["historical"]
+            elif endpoint.response_type == "object":
+                data = [data]
+            else:
+                data = [data]
+
+    if not data and not allow_empty:
+        raise FMPEmptyResponseError(endpoint_name)
+
+    dataframe = pd.DataFrame(data)
+    if endpoint.response_transform is not None:
+        dataframe = endpoint.response_transform(dataframe)
+    return dataframe
 
 
 class _RateLimiter:
@@ -136,6 +195,8 @@ class FMPClient:
     # Base URLs for different API versions
     BASE_URL_STABLE = "https://financialmodelingprep.com/stable"
     BASE_URL_V3 = "https://financialmodelingprep.com/api/v3"
+    _DEFAULT_RATE_LIMIT_ATTEMPTS = 3
+    _MAX_RATE_LIMIT_ATTEMPTS = 10
 
     def __init__(
         self,
@@ -143,6 +204,8 @@ class FMPClient:
         cache: FMPCache | None = None,
         timeout: int = 30,
         max_calls_per_minute: int = 700,
+        clock: Callable[[], datetime] | None = None,
+        rate_limit_attempts: int = _DEFAULT_RATE_LIMIT_ATTEMPTS,
     ):
         """
         Initialize FMP client.
@@ -155,13 +218,24 @@ class FMPClient:
             cache: Custom cache instance (defaults to module cache)
             timeout: Request timeout in seconds
             max_calls_per_minute: Sliding-window request cap for all FMP calls
+            rate_limit_attempts: Total HTTP dispatch attempts allowed for a 429
         """
+        if (
+            type(rate_limit_attempts) is not int
+            or not 1 <= rate_limit_attempts <= self._MAX_RATE_LIMIT_ATTEMPTS
+        ):
+            raise ValueError(
+                "rate_limit_attempts must be an integer between 1 and "
+                f"{self._MAX_RATE_LIMIT_ATTEMPTS}"
+            )
         # Lazy API key - store but don't validate yet
         self._api_key = api_key
         self._api_key_resolved = False
         self.cache = cache or get_cache()
         self.timeout = timeout
         self._rate_limiter = _RateLimiter(max_calls_per_minute)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._rate_limit_attempts = rate_limit_attempts
 
     @property
     def api_key(self) -> str:
@@ -198,7 +272,6 @@ class FMPClient:
 
         return f"{base}/{path}"
 
-    _RATE_LIMIT_RETRIES = 3
     _RATE_LIMIT_BACKOFF_SECONDS = 30
 
     def _dispatch_once(
@@ -240,7 +313,7 @@ class FMPClient:
             if f"{{{key}}}" not in endpoint.path:
                 request_params[key] = value
 
-        for attempt in range(1, self._RATE_LIMIT_RETRIES + 1):
+        for attempt in range(1, self._rate_limit_attempts + 1):
             start_time = time.time()
 
             try:
@@ -251,23 +324,23 @@ class FMPClient:
                     budget_user_id=budget_user_id,
                 )
             except requests.exceptions.Timeout:
-                self._log_error(endpoint.name, "Request timeout")
+                self._log_error(endpoint.name, "request_timeout")
                 raise FMPAPIError(
                     f"Request timeout for endpoint '{endpoint.name}'",
                     endpoint=endpoint.name,
-                )
-            except requests.exceptions.RequestException as e:
-                self._log_error(endpoint.name, str(e))
+                ) from None
+            except requests.exceptions.RequestException:
+                self._log_error(endpoint.name, "request_failed")
                 raise FMPAPIError(
-                    f"Request failed for endpoint '{endpoint.name}': {e}",
+                    f"Request failed for endpoint '{endpoint.name}'",
                     endpoint=endpoint.name,
-                )
+                ) from None
 
             response_time = time.time() - start_time
 
             # Handle rate limiting with retry
             if resp.status_code == 429:
-                if attempt < self._RATE_LIMIT_RETRIES:
+                if attempt < self._rate_limit_attempts:
                     self._log_rate_limit(endpoint.name)
                     time.sleep(self._RATE_LIMIT_BACKOFF_SECONDS)
                     self._rate_limiter.acquire()
@@ -402,6 +475,58 @@ class FMPClient:
 
         return cache_key
 
+    def _prepare_fetch(
+        self,
+        endpoint_name: str,
+        params: dict[str, Any],
+    ) -> tuple[FMPEndpoint, dict[str, Any], list[str], str]:
+        endpoint = get_endpoint(endpoint_name)
+        if endpoint is None:
+            raise FMPEndpointError(endpoint_name)
+        try:
+            validated_params = endpoint.build_params(**params)
+        except ValueError as exc:
+            raise FMPValidationError(str(exc)) from exc
+        cache_key = self._build_cache_key(endpoint, validated_params)
+        prefix = str(validated_params.get("symbol", endpoint_name))
+        return endpoint, validated_params, cache_key, prefix
+
+    def _normalized_loader(
+        self,
+        endpoint: FMPEndpoint,
+        endpoint_name: str,
+        validated_params: dict[str, Any],
+        budget_user_id: int | None,
+        *,
+        allow_empty: bool = False,
+    ) -> Callable[[], pd.DataFrame]:
+        def load() -> pd.DataFrame:
+            data = self._make_request(
+                endpoint,
+                validated_params,
+                budget_user_id=budget_user_id,
+            )
+            try:
+                return _normalize_response(
+                    endpoint,
+                    endpoint_name,
+                    data,
+                    allow_empty=allow_empty,
+                )
+            except FMPEmptyResponseError:
+                symbol = validated_params.get("symbol")
+                raise FMPEmptyResponseError(endpoint_name, symbol) from None
+
+        return load
+
+    def _observed_at(self) -> datetime:
+        observed_at = self._clock()
+        if not isinstance(observed_at, datetime):
+            raise TypeError("FMP client clock must return datetime")
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("FMP client clock must return an aware datetime")
+        return observed_at.astimezone(timezone.utc)
+
     def fetch(
         self,
         endpoint_name: str,
@@ -434,76 +559,103 @@ class FMPClient:
             FMPEmptyResponseError: If API returns empty data
             FMPAuthenticationError: If API key is missing
         """
-        endpoint = get_endpoint(endpoint_name)
-        if endpoint is None:
-            raise FMPEndpointError(endpoint_name)
-
-        # Validate and build params
-        try:
-            validated_params = endpoint.build_params(**params)
-        except ValueError as e:
-            raise FMPValidationError(str(e))
-
-        # Build cache key with staleness protection
-        cache_key = self._build_cache_key(endpoint, validated_params)
-        prefix = validated_params.get("symbol", endpoint_name)
-
-        def _loader() -> pd.DataFrame:
-            data = self._make_request(
-                endpoint,
-                validated_params,
-                budget_user_id=budget_user_id,
-            )
-
-            # Handle different response types
-            if isinstance(data, dict):
-                # Extract nested data using response_path (supports dot-path like "data.items")
-                if endpoint.response_path:
-                    extracted = _extract_by_path(data, endpoint.response_path)
-                    if extracted is not None:
-                        data = extracted
-                    else:
-                        # Path not found - log warning and try fallbacks
-                        import warnings
-                        warnings.warn(
-                            f"response_path '{endpoint.response_path}' not found in response for "
-                            f"endpoint '{endpoint_name}'. Trying fallbacks.",
-                            UserWarning,
-                            stacklevel=2,
-                        )
-                        # Fall through to fallback logic
-
-                # Fallback: check for common nested keys (backward compatibility)
-                if isinstance(data, dict):
-                    if "historical" in data:
-                        data = data["historical"]
-                    elif endpoint.response_type == "object":
-                        data = [data]
-                    else:
-                        data = [data]
-
-            if not data:
-                symbol = validated_params.get("symbol")
-                raise FMPEmptyResponseError(endpoint_name, symbol)
-
-            df = pd.DataFrame(data)
-
-            # Apply response transform if defined (for complex response shaping)
-            if endpoint.response_transform is not None:
-                df = endpoint.response_transform(df)
-
-            return df
+        endpoint, validated_params, cache_key, prefix = self._prepare_fetch(
+            endpoint_name,
+            params,
+        )
+        loader = self._normalized_loader(
+            endpoint,
+            endpoint_name,
+            validated_params,
+            budget_user_id,
+        )
 
         # Check if caching is disabled for this endpoint
         if not use_cache or not endpoint.cache_enabled:
-            return _loader()
+            return loader()
 
         return self.cache.read(
             key=cache_key,
-            loader=_loader,
+            loader=loader,
             cache_dir=endpoint.cache_dir,
             prefix=prefix,
             ttl_hours=endpoint.cache_ttl_hours,
+        )
+
+    def fetch_with_lineage(
+        self,
+        endpoint_name: str,
+        *,
+        use_cache: bool = True,
+        allow_empty: bool = False,
+        budget_user_id: int | None = None,
+        **params: Any,
+    ) -> FMPFetchResult:
+        """Fetch normalized FMP data with provider-issued response lineage.
+
+        ``allow_empty`` preserves an exact empty provider response when absence
+        itself is a requested fact (for example, no historical stock splits).
+        Ordinary fetches retain the longstanding empty-response exception.
+        """
+
+        if type(allow_empty) is not bool:
+            raise TypeError("allow_empty must be bool")
+
+        endpoint, validated_params, cache_key, prefix = self._prepare_fetch(
+            endpoint_name,
+            params,
+        )
+        if allow_empty:
+            # Empty-preserving responses are a distinct cache contract. Never
+            # let one satisfy the ordinary API, which must raise on emptiness.
+            cache_key = [*cache_key, "allow_empty:true"]
+        loader = self._normalized_loader(
+            endpoint,
+            endpoint_name,
+            validated_params,
+            budget_user_id,
+            allow_empty=allow_empty,
+        )
+
+        def descriptor_for(dataframe: pd.DataFrame) -> dict[str, Any]:
+            return build_vendor_response_descriptor(
+                endpoint_name,
+                validated_params,
+                dataframe_records(dataframe),
+            )
+
+        def response_sha256_for(dataframe: pd.DataFrame) -> str:
+            return str(descriptor_for(dataframe)["response_sha256"])
+
+        if not use_cache or not endpoint.cache_enabled:
+            dataframe = loader()
+            source = "live"
+            observed_at = self._observed_at()
+        else:
+            cache_result = self.cache.read_with_metadata(
+                key=cache_key,
+                loader=loader,
+                request_sha256=build_vendor_request_sha256(
+                    endpoint_name,
+                    validated_params,
+                ),
+                response_sha256_for=response_sha256_for,
+                clock=self._observed_at,
+                cache_dir=endpoint.cache_dir,
+                prefix=prefix,
+                ttl_hours=endpoint.cache_ttl_hours,
+            )
+            dataframe = cache_result.dataframe
+            source = cache_result.source
+            observed_at = cache_result.observed_at
+
+        return FMPFetchResult(
+            endpoint=endpoint_name,
+            validated_params=validated_params,
+            dataframe=dataframe,
+            source=source,
+            observed_at=observed_at,
+            lineage_descriptor=descriptor_for(dataframe),
         )
 
     def fetch_raw(
@@ -668,3 +820,9 @@ def fetch(endpoint_name: str, **params: Any) -> pd.DataFrame:
         prices = fetch("historical_price_adjusted", symbol="AAPL")
     """
     return get_client().fetch(endpoint_name, **params)
+
+
+def fetch_with_lineage(endpoint_name: str, **params: Any) -> FMPFetchResult:
+    """Fetch data and provider-issued lineage using the shared FMP client."""
+
+    return get_client().fetch_with_lineage(endpoint_name, **params)

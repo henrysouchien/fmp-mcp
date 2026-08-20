@@ -1,5 +1,10 @@
 # FMP Data Abstraction Layer
 
+**Status:** CURRENT / ACTIVE REFERENCE
+**Last reviewed:** 2026-07-29
+**Current source of truth:** `fmp/registry.py`, `fmp/client.py`, `fmp/server.py`
+
+
 A unified interface for Financial Modeling Prep (FMP) API data access with:
 - **Discoverable endpoints** with full metadata
 - **Disk caching** (Parquet + Zstandard compression)
@@ -214,7 +219,7 @@ register_endpoint(FMPEndpoint(
 
 Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 
-**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server currently exposes 20 tools:
+**Note:** The FMP MCP server (`fmp/server.py`, invoked via `python3 -m fmp.server`) wraps this package for direct Claude access. When adding new endpoints or modifying the client API, ensure the MCP tools remain compatible. The MCP server currently exposes 22 tools:
 
 | MCP Tool | Description |
 |----------|-------------|
@@ -238,6 +243,8 @@ Immediately usable: `fmp.fetch("analyst_recommendations", symbol="AAPL")`
 | `get_news` | News articles (stock-specific, general, press releases) |
 | `get_events_calendar` | Corporate event calendars (earnings, dividends, splits, IPOs) |
 | `get_earnings_transcript` | Parse and navigate earnings call transcripts |
+| `get_price_performance_windows` | Compact benchmark-relative price windows |
+| `get_stock_fundamentals` | Enriched stock lookup (profile/quote/financials/valuation/quality/technicals) |
 
 ---
 
@@ -501,12 +508,14 @@ The FMP layer exposes estimate revision tools backed by the hosted estimates API
 
 A monthly cron job (`fmp/scripts/snapshot_estimates.py`) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`). Writes prefer `FMP_DATA_WRITE_DATABASE_URL`; reads prefer `FMP_DATA_READ_DATABASE_URL`; `FMP_DATA_DATABASE_URL` remains as the legacy fallback. Production least-privilege deployments should set `FMP_DATA_ENSURE_SCHEMA=false` and apply schema changes separately. Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
 
-### Usage
+### Usage (local fallback / collector — not the MCP primary path)
+
+MCP tools `get_estimate_revisions` / `screen_estimate_revisions` use `fmp/tools/estimates.py` → `ESTIMATE_API_URL` (default `https://www.edgarparser.com`; optional `EDGAR_API_KEY`). `EstimateStore` + `FMP_DATA_*` URLs remain for local/dev and `snapshot_estimates.py` writes.
 
 ```python
 from fmp.estimate_store import EstimateStore
 
-store = EstimateStore(read_only=True)
+store = EstimateStore(read_only=True)  # local Postgres fallback
 
 # Latest consensus for a ticker
 latest = store.get_latest("AAPL", period="quarter")

@@ -26,7 +26,6 @@ from cachetools import TTLCache
 
 from ..client import FMPClient
 from fmp._shared.fmp_helpers import (
-    compute_forward_ev_ebitda,
     compute_forward_ev_sales,
     compute_forward_pe,
 )
@@ -51,7 +50,6 @@ DEFAULT_PEER_METRICS = [
     # Valuation (most common → most niche)
     "forwardPE",
     "priceToEarningsRatioTTM",
-    "_computed_forward_ev_ebitda",
     "_computed_forward_ev_sales",
     "priceToFreeCashFlowRatioTTM",
     "priceToBookRatioTTM",
@@ -76,7 +74,7 @@ DEFAULT_PEER_METRICS = [
 
 # Display labels for metric keys
 METRIC_LABELS = {
-    "forwardPE": "Fwd P/E",
+    "forwardPE": "FY1 P/E",
     "priceToEarningsRatioTTM": "P/E (TTM)",
     "priceToBookRatioTTM": "P/B Ratio",
     "priceToFreeCashFlowRatioTTM": "P/FCF",
@@ -91,7 +89,6 @@ METRIC_LABELS = {
     "freeCashFlowYieldTTM": "FCF Yield",
     "dividendYieldTTM": "Dividend Yield",
     "forwardPriceToEarningsGrowthRatioTTM": "PEG (FY1)",
-    "_computed_forward_ev_ebitda": "EV/EBITDA (FY1)",
     "_computed_forward_ev_sales": "EV/Sales (FY1)",
     "freeCashFlowPerShareTTM": "FCF/Share",
     "_ttm_revenue": "Revenue",
@@ -341,11 +338,9 @@ def _fetch_ratios_and_estimates(
             if field in balance_sheet_dict:
                 merged[field] = balance_sheet_dict[field]
         merged["forwardPE"] = forward_pe_result.get("forward_pe")
-        merged["_computed_forward_ev_ebitda"] = compute_forward_ev_ebitda(
-            merged.get("enterpriseValueTTM"),
-            estimates,
-            last_reported_date,
-        )
+        merged["forwardPEBasis"] = forward_pe_result.get("forward_pe_basis")
+        merged["forwardPEFiscalPeriod"] = forward_pe_result.get("fiscal_period")
+        merged["forwardPEAnalystCount"] = forward_pe_result.get("analyst_count")
         merged["_computed_forward_ev_sales"] = compute_forward_ev_sales(
             merged.get("enterpriseValueTTM"),
             estimates,
@@ -964,6 +959,10 @@ def compare_peers(
             "peer_count": len(successful_peers),
             "peer_source": peer_source,
             "comparison": comparison,
+            "forward_pe_fiscal_periods": {
+                ticker: ratios_by_ticker[ticker].get("forwardPEFiscalPeriod")
+                for ticker in tickers_order
+            },
             "failed_tickers": failed_tickers,
         }
         if peer_resolution is not None:
