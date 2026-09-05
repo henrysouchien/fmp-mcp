@@ -300,7 +300,7 @@ def test_current_operating_transcript_stamps_cik(
         encoding='utf-8',
     )
     monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
-    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    monkeypatch.setattr(corpus_validation, '_universe_files', lambda: ())
     body, metadata = _build_transcript_body(
         _sample_result(date=datetime.now(UTC).date().isoformat())
     )
@@ -328,7 +328,7 @@ def test_current_etf_transcript_does_not_stamp_trust_cik(
         encoding='utf-8',
     )
     monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
-    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    monkeypatch.setattr(corpus_validation, '_universe_files', lambda: ())
     body, metadata = _build_transcript_body(
         _sample_result(symbol='SPY', date=datetime.now(UTC).date().isoformat())
     )
@@ -356,7 +356,7 @@ def test_historical_transcript_does_not_stamp_cik(
         encoding='utf-8',
     )
     monkeypatch.setattr(corpus_validation, 'corpus_cik_cache_dir', lambda: profile_dir)
-    monkeypatch.setattr(corpus_validation, '_UNIVERSE_FILES', ())
+    monkeypatch.setattr(corpus_validation, '_universe_files', lambda: ())
     historical_date = (datetime.now(UTC).date() - timedelta(days=400)).isoformat()
     body, metadata = _build_transcript_body(_sample_result(date=historical_date))
     corpus_root = tmp_path / 'corpus'

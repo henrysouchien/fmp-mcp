@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import os
 import threading
 import time
@@ -49,6 +50,8 @@ from .registry import (
     get_endpoint,
     list_endpoints as registry_list_endpoints,
 )
+
+logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=1)
 def _resolve_guard_call():
@@ -399,7 +402,10 @@ class FMPClient:
             log_rate_limit_hit(None, endpoint_name, "api_calls", None, "free")
             log_service_health("FMP_API", "degraded", 0, {"error": "rate_limited"})
         except ImportError:
-            pass
+            logger.warning(
+                "FMP API rate limit for %s: service degraded",
+                endpoint_name,
+            )
 
     def _log_success(self, endpoint_name: str, response_time: float) -> None:
         """Suppress healthy-call logs to keep output high signal."""
@@ -419,7 +425,7 @@ class FMPClient:
             )
             log_service_health("FMP_API", "down", 0, {"error": error})
         except ImportError:
-            pass
+            logger.error("FMP API error for %s: %s", endpoint_name, error)
 
     def _log_plan_limited(self, endpoint_name: str, error: str) -> None:
         """Log entitlement/plan-limit errors (HTTP 402)."""
@@ -434,7 +440,7 @@ class FMPClient:
             )
             log_service_health("FMP_API", "degraded", 0, {"error": error})
         except ImportError:
-            pass
+            logger.warning("FMP plan limit for %s: %s", endpoint_name, error)
 
     def _build_cache_key(
         self,
