@@ -9,7 +9,7 @@ local Postgres). A copy of this file also lives in the edgar_updater repo
 behind the API routes.
 
 Can be removed once the local fallback is no longer needed (Step 9 of
-docs/planning/completed/EARNINGS_ESTIMATE_AWS_MIGRATION_PLAN.md).
+docs/planning/completed/estimates/EARNINGS_ESTIMATE_AWS_MIGRATION_PLAN.md).
 """
 
 from __future__ import annotations

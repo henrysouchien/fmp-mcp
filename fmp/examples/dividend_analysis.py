@@ -33,7 +33,7 @@ for symbol in symbols:
     try:
         profile_df = fmp.fetch("profile", symbol=symbol)
         profile_data[symbol] = profile_df
-        print(f"  - Got company profile")
+        print("  - Got company profile")
     except Exception as e:
         print(f"  - Error fetching profile: {e}")
         profile_data[symbol] = None
@@ -126,7 +126,7 @@ for symbol in symbols:
             annual_dividends = df.groupby('year')[div_col].sum().sort_index()
 
             print(f"\n{symbol}:")
-            print(f"  Annual dividend totals (complete years only):")
+            print("  Annual dividend totals (complete years only):")
 
             # Only show complete years (exclude current year since it's partial)
             complete_years = [y for y in annual_dividends.index if y < current_year]
@@ -134,7 +134,7 @@ for symbol in symbols:
                 print(f"    {year}: ${annual_dividends[year]:.4f}")
 
             # Also show per-share dividend for most recent payments
-            print(f"\n  Recent quarterly dividends:")
+            print("\n  Recent quarterly dividends:")
             for i, row in df.head(4).iterrows():
                 date = row['date']
                 div = row[div_col]

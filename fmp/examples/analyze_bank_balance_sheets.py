@@ -66,7 +66,7 @@ for symbol in banks:
         equity_ratio = (total_equity / total_assets * 100) if total_assets > 0 else 0
 
         print(f"\n  Fiscal Year: {fiscal_year}")
-        print(f"  ------------------------------------")
+        print("  ------------------------------------")
         print(f"  Total Assets:      ${total_assets/1e9:,.1f}B")
         print(f"  Total Equity:      ${total_equity/1e9:,.1f}B")
         print(f"  Leverage Ratio:    {leverage_ratio:.2f}x (Assets/Equity)")
@@ -106,19 +106,19 @@ print("=" * 80)
 
 # Lower leverage = more conservative
 latest_sorted_leverage = latest.sort_values('Leverage Ratio')
-print(f"\nBy Leverage Ratio (lower = more conservative):")
+print("\nBy Leverage Ratio (lower = more conservative):")
 for idx, row in latest_sorted_leverage.iterrows():
     print(f"  {row['Symbol']}: {row['Leverage Ratio']:.2f}x")
 
 # Higher equity ratio = more conservative
 latest_sorted_equity = latest.sort_values('Equity Ratio (%)', ascending=False)
-print(f"\nBy Equity Ratio (higher = more conservative):")
+print("\nBy Equity Ratio (higher = more conservative):")
 for idx, row in latest_sorted_equity.iterrows():
     print(f"  {row['Symbol']}: {row['Equity Ratio (%)']:.2f}%")
 
 # Higher cash/securities = more liquid
 latest_sorted_liquid = latest.sort_values('Cash+Securities (%)', ascending=False)
-print(f"\nBy Liquidity (Cash+Securities % of Assets, higher = more liquid):")
+print("\nBy Liquidity (Cash+Securities % of Assets, higher = more liquid):")
 for idx, row in latest_sorted_liquid.iterrows():
     print(f"  {row['Symbol']}: {row['Cash+Securities (%)']:.1f}%")
 

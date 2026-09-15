@@ -63,14 +63,14 @@ inverted_days = (treasury_df['spread_2y10y'] < 0).sum()
 total_days = len(treasury_df)
 pct_inverted = inverted_days / total_days * 100
 
-print(f"\nSpread Statistics:")
+print("\nSpread Statistics:")
 print(f"  Mean spread:          {spread_mean:+.2f}%")
 print(f"  Min spread (deepest): {spread_min:+.2f}%")
 print(f"  Max spread:           {spread_max:+.2f}%")
 print(f"  Start of period:      {spread_start:+.2f}%")
 print(f"  End of period:        {spread_end:+.2f}%")
 
-print(f"\nYield Curve Inversion:")
+print("\nYield Curve Inversion:")
 print(f"  Days with inverted curve (negative spread): {inverted_days} out of {total_days}")
 print(f"  Percentage of time inverted: {pct_inverted:.1f}%")
 
@@ -104,7 +104,7 @@ month3_end = treasury_df.iloc[-1]['month3']
 peak_idx = treasury_df['month3'].idxmax()
 peak_date = treasury_df.loc[peak_idx, 'date']
 
-print(f"\n3-Month Treasury Rate (Fed Funds Proxy):")
+print("\n3-Month Treasury Rate (Fed Funds Proxy):")
 print(f"  Start of period (Jan 2023): {month3_start:.2f}%")
 print(f"  Peak rate:                  {month3_max:.2f}%")
 print(f"  Peak date:                  {peak_date.date()}")

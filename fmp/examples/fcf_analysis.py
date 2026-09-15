@@ -72,7 +72,7 @@ for ticker in tickers:
         elif 'netCashProvidedByOperatingActivities' in cf.columns:
             ocf_col = 'netCashProvidedByOperatingActivities'
         else:
-            print(f"  Cannot find operating cash flow column")
+            print("  Cannot find operating cash flow column")
             continue
 
         if 'capitalExpenditure' in cf.columns:
@@ -80,7 +80,7 @@ for ticker in tickers:
         elif 'capitalExpenditures' in cf.columns:
             capex_col = 'capitalExpenditures'
         else:
-            print(f"  Cannot find capital expenditure column")
+            print("  Cannot find capital expenditure column")
             continue
 
         cf['freeCashFlow'] = cf[ocf_col] + cf[capex_col]  # CapEx is usually negative
@@ -137,7 +137,7 @@ for ticker in tickers:
     elif 'totalRevenue' in inc.columns:
         rev_col = 'totalRevenue'
     else:
-        print(f"  Cannot find revenue column")
+        print("  Cannot find revenue column")
         continue
 
     # Match by year
@@ -188,7 +188,7 @@ for ticker in tickers:
     elif 'capitalExpenditures' in cf.columns:
         capex_col = 'capitalExpenditures'
     else:
-        print(f"  Cannot find capital expenditure column")
+        print("  Cannot find capital expenditure column")
         continue
 
     # Get revenue
