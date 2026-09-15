@@ -75,14 +75,18 @@ The source package lives at Risk's `fmp-mcp/`; install it into a development
 interpreter with `uv pip install --python .venv/bin/python --no-deps -e ./fmp-mcp`
 from the Risk root.
 
-Applications may configure these callbacks at startup:
+Applications must explicitly configure the client once at startup before any
+network fetch. An unconfigured client refuses dispatch and names the required
+`configure_client(...)` call. Applications can bind these callbacks:
 
 - `fmp.client.configure_client(budget_guard=..., event_observer=...)`.
   The guard accepts `fn`, `args`, `kwargs` plus provider/operation/budget
   metadata. The observer receives `(event, endpoint, **details)`, where event
   is `success` (`duration_ms`, `status`), `rate_limit`, `error` (`error`), or
-  `plan_limit` (`error`). Without callbacks, requests dispatch directly and
-  native Python logging reports rate limits and errors.
+  `plan_limit` (`error`). Explicit `configure_client()` selects the public
+  default: no budget guard, direct requests, and native Python logging for
+  rate limits and errors. The public `fmp-mcp` / `python -m fmp.server`
+  entrypoint selects this policy before serving tools.
 - `fmp.tools.peers.configure_peer_tools(metric_resolver=..., peer_discovery=...,
   spot_fx_rate=...)`. Metric resolvers return the existing structural
   `peers`/`source`/`to_dict()` result; discovery returns ticker strings.
@@ -92,12 +96,14 @@ Applications may configure these callbacks at startup:
   daily close of FMP's `<currency>USD` pair. The optional FX callback returns
   a currency-to-USD rate.
 
-Risk binds all five callbacks at its single `bootstrap_env` composition point;
-its logging, billing, peer selection, and exchange-mapping policy remain
-application code. `scripts/run_fmp_server.py` owns Risk credential hydration
-before invoking the installed server. Risk-only wrappers live in
-`utils/fmp_compat.py` and `utils/fmp_fx.py`, and its local collector lives in
-`scripts/snapshot_estimates.py`.
+Risk process entrypoints call `fmp_runtime.configure()` after environment
+hydration to bind all five callbacks; logging, billing, peer selection, and
+exchange-mapping policy remain application code. `bootstrap_env.bootstrap()`
+only hydrates environment and never imports FMP or application policy.
+`scripts/run_fmp_server.py` owns Risk credential hydration and policy setup
+before invoking the installed `fmp.server.run()` (which preserves the
+caller's policy). Risk-only wrappers live in `utils/fmp_compat.py` and
+`utils/fmp_fx.py`, and the local collector lives in `scripts/snapshot_estimates.py`.
 
 The source retains the Hank-only `transcript_kpi_fetcher.py` and
 `manifest_source_dispatcher.py`; public distribution sync excludes them.

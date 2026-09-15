@@ -19,7 +19,9 @@ Features:
 
 Quick Start:
     from fmp import FMPClient
+    from fmp.client import configure_client
 
+    configure_client()  # Explicit public policy: no application budget guard
     fmp = FMPClient()
 
     # Fetch data
@@ -33,7 +35,9 @@ Quick Start:
 
 Convenience Functions:
     from fmp import fetch, get_client
+    from fmp.client import configure_client
 
+    configure_client()  # Risk process entrypoints use fmp_runtime.configure()
     prices = fetch("historical_price_adjusted", symbol="AAPL")
     client = get_client()  # Shared client instance
 

@@ -6,10 +6,16 @@ Use this guide when tasking Claude agents to perform financial analysis using th
 
 ## Basic Usage
 
+The process must configure its client before fetching. Standalone use selects
+the public no-budget-guard policy with `configure_client()`; Risk entrypoints
+instead call `fmp_runtime.configure()`. The examples below assume this setup.
+
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
 from fmp.exceptions import FMPEmptyResponseError
 
+configure_client()
 fmp = FMPClient()
 
 # All endpoints use fmp.fetch() - returns a pandas DataFrame
@@ -34,7 +40,9 @@ Use the FMP package at `fmp/` to [task].
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
 from fmp.exceptions import FMPEmptyResponseError
+configure_client()
 fmp = FMPClient()
 ```
 

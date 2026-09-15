@@ -53,15 +53,17 @@ from .registry import (
 
 logger = logging.getLogger(__name__)
 
+_configured = False
 _budget_guard: Callable | None = None
 _event_observer: Callable | None = None
 
 
 def configure_client(*, budget_guard: Callable | None = None, event_observer: Callable | None = None) -> None:
-    """Bind application budget and event callbacks; standalone calls use native logging."""
-    global _budget_guard, _event_observer
+    """Enable dispatch with explicit callbacks, or native logging and no budget guard."""
+    global _configured, _budget_guard, _event_observer
     _budget_guard = budget_guard
     _event_observer = event_observer
+    _configured = True
 
 
 def _observe(event: str, endpoint: str, **details: Any) -> None:
@@ -70,7 +72,12 @@ def _observe(event: str, endpoint: str, **details: Any) -> None:
 
 
 def guard_call(*, fn, args=(), kwargs=None, **guard_kwargs):
-    """Dispatch through the application budget owner, or directly when standalone."""
+    """Dispatch through the explicitly configured application or standalone policy."""
+    if not _configured:
+        raise RuntimeError(
+            "FMP network dispatch is not configured. Call fmp_runtime.configure() "
+            "in Risk or fmp.client.configure_client(...) for standalone use."
+        )
     if _budget_guard is None:
         return fn(*args, **(kwargs or {}))
     return _budget_guard(
@@ -188,6 +195,9 @@ class FMPClient:
     - Direct callers using ``from fmp import fetch, get_client``
 
     Example usage:
+        from fmp.client import configure_client
+
+        configure_client()
         fmp = FMPClient()
 
         # Fetch data
@@ -539,6 +549,7 @@ class FMPClient:
             FMPAPIError: If API request fails
             FMPEmptyResponseError: If API returns empty data
             FMPAuthenticationError: If API key is missing
+            RuntimeError: If network dispatch has not been explicitly configured
         """
         endpoint, validated_params, cache_key, prefix = self._prepare_fetch(
             endpoint_name,
@@ -798,6 +809,9 @@ def fetch(endpoint_name: str, **params: Any) -> pd.DataFrame:
 
     Example:
         from fmp import fetch
+        from fmp.client import configure_client
+
+        configure_client()
         prices = fetch("historical_price_adjusted", symbol="AAPL")
     """
     return get_client().fetch(endpoint_name, **params)

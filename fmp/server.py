@@ -29,6 +29,8 @@ from typing import Literal, Optional
 
 from fastmcp import FastMCP
 
+from fmp.client import configure_client
+
 from fmp.tools.fmp_core import (
     fmp_describe as _fmp_describe,
     fmp_fetch as _fmp_fetch,
@@ -1308,9 +1310,16 @@ def _kill_previous_instance():
             pass  # process exists but owned by another user
 
 
-def main():
+def run():
+    """Serve using the caller's already-configured FMP runtime policy."""
     _kill_previous_instance()
     mcp.run()
+
+
+def main():
+    """Configure standalone native policy and serve the public MCP package."""
+    configure_client()
+    run()
 
 
 if __name__ == "__main__":
