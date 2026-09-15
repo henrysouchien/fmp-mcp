@@ -278,7 +278,7 @@ class FMPCache:
         return False
 
 
-# Module-level cache instance (uses project root)
+# Module-level cache instance.
 _cache: FMPCache | None = None
 _timeseries_stores: dict[str, TimeSeriesStore] = {}
 _timeseries_store_guard = threading.Lock()
@@ -288,9 +288,6 @@ def _default_cache_base() -> Path:
     env = os.getenv("FMP_CACHE_DIR")
     if env:
         return Path(env).expanduser().resolve()
-    project_root = Path(__file__).parent.parent
-    if (project_root / "settings.py").exists():
-        return project_root
     xdg = os.getenv("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
     return Path(xdg) / "fmp-mcp"
 

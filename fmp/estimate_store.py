@@ -32,7 +32,7 @@ _LEGACY_DATABASE_URL_ENV = "FMP_DATA_DATABASE_URL"
 _READ_DATABASE_URL_ENV = "FMP_DATA_READ_DATABASE_URL"
 _WRITE_DATABASE_URL_ENV = "FMP_DATA_WRITE_DATABASE_URL"
 _ENSURE_SCHEMA_ENV = "FMP_DATA_ENSURE_SCHEMA"
-_SCHEMA_PATH = Path(__file__).resolve().parent / "scripts" / "create_fmp_data_schema.sql"
+_SCHEMA_PATH = Path(__file__).with_name("create_fmp_data_schema.sql")
 
 
 def _utc_now() -> datetime:

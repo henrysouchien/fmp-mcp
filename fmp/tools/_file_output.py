@@ -15,10 +15,6 @@ def _cache_base() -> Path:
     if env:
         return Path(env).expanduser().resolve()
 
-    project_root = Path(__file__).parent.parent.parent
-    if (project_root / "settings.py").exists():
-        return project_root
-
     xdg = os.getenv("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
     return Path(xdg) / "fmp-mcp"
 

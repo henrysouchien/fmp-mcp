@@ -20,7 +20,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Optional, Literal
+from typing import Any, Callable, Optional, Literal
 
 from cachetools import TTLCache
 
@@ -32,6 +32,38 @@ from fmp._shared.fmp_helpers import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class PeerSelectionError(Exception):
+    """An application peer policy could not produce the requested universe."""
+
+
+_metric_resolver: Callable | None = None
+_peer_discovery: Callable | None = None
+_spot_fx_rate: Callable | None = None
+
+
+def configure_peer_tools(
+    *,
+    metric_resolver: Callable | None = None,
+    peer_discovery: Callable | None = None,
+    spot_fx_rate: Callable | None = None,
+) -> None:
+    """Bind application peer/FX policies; standalone discovery uses FMP stock_peers."""
+    global _metric_resolver, _peer_discovery, _spot_fx_rate
+    _metric_resolver = metric_resolver
+    _peer_discovery = peer_discovery
+    _spot_fx_rate = spot_fx_rate
+
+
+def _get_spot_fx_rate(currency: str) -> float:
+    if _spot_fx_rate is not None:
+        return _spot_fx_rate(currency)
+    rows = FMPClient().fetch_raw(
+        "historical_price_eod", symbol=f"{currency.upper()}USD", use_cache=False,
+    )
+    latest = max(rows, key=lambda row: row["date"])
+    return float(latest["close"])
 
 # === Constants ===
 
@@ -352,9 +384,7 @@ def _fetch_ratios_and_estimates(
             reported_currency = income_rows[0].get("reportedCurrency")
 
         if reported_currency and reported_currency != "USD":
-            from fmp.fx import get_spot_fx_rate
-
-            fx_rate = get_spot_fx_rate(reported_currency)
+            fx_rate = _get_spot_fx_rate(reported_currency)
             if fx_rate != 1.0:
                 for key in ABSOLUTE_METRICS:
                     if key in merged and merged[key] is not None:
@@ -753,18 +783,7 @@ def compare_peers(
             peer_list = [t.strip().upper() for t in peers.split(",") if t.strip()]
             peer_source = "explicit"
         elif editorial_peer_set is not None or peer_context is not None or metric is not None:
-            try:
-                from utils.peer_resolver import PeerResolutionError, resolve_metric_peer_universe
-            except ImportError:
-                # utils.peer_resolver is monorepo-only and is not vendored into the
-                # standalone fmp-mcp wheel. Return the manual-peer hint instead of
-                # letting the ModuleNotFoundError surface as a NameError on the
-                # `except PeerResolutionError` clause below.
-                logger.warning(
-                    "Metric peer resolver unavailable for %s; provide peers manually",
-                    symbol,
-                    exc_info=True,
-                )
+            if _metric_resolver is None:
                 return {
                     "status": "error",
                     "error": (
@@ -774,7 +793,7 @@ def compare_peers(
                     ),
                 }
             try:
-                resolution = resolve_metric_peer_universe(
+                resolution = _metric_resolver(
                     symbol,
                     editorial_peer_set,
                     fmp_client=fmp,
@@ -785,7 +804,7 @@ def compare_peers(
                 peer_list = resolution.peers
                 peer_source = resolution.source
                 peer_resolution = resolution.to_dict()
-            except PeerResolutionError:
+            except PeerSelectionError:
                 return {
                     "status": "error",
                     "error": (
@@ -802,22 +821,10 @@ def compare_peers(
         else:
             # Auto-discover peers
             peer_list = []
-            try:
-                from core.proxy_builder import (
-                    SubindustryPeerGenerationError,
-                    get_subindustry_peers_from_ticker,
-                )
-            except Exception:
-                logger.warning(
-                    "Custom peer discovery import unavailable for %s; falling back to FMP stock_peers",
-                    symbol,
-                    exc_info=True,
-                )
-            else:
+            if _peer_discovery is not None:
                 try:
-                    peer_list = get_subindustry_peers_from_ticker(symbol)
-                    peer_list = list(dict.fromkeys(peer_list))
-                except SubindustryPeerGenerationError as e:
+                    peer_list = list(dict.fromkeys(_peer_discovery(symbol)))
+                except PeerSelectionError as e:
                     return {
                         "status": "error",
                         "error": f"Failed to generate custom peers for {symbol}: {e}",

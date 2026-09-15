@@ -1,7 +1,7 @@
 # FMP Data Abstraction Layer
 
 **Status:** CURRENT / ACTIVE REFERENCE
-**Last reviewed:** 2026-07-29
+**Last reviewed:** 2026-09-15
 **Current source of truth:** `fmp/registry.py`, `fmp/client.py`, `fmp/server.py`
 
 
@@ -9,7 +9,6 @@ A unified interface for Financial Modeling Prep (FMP) API data access with:
 - **Discoverable endpoints** with full metadata
 - **Disk caching** (Parquet + Zstandard compression)
 - **Structured error handling**
-- **Backward-compatible wrappers**
 
 ## Documentation
 
@@ -506,7 +505,7 @@ The FMP layer exposes estimate revision tools backed by the hosted estimates API
 
 ### How It Works
 
-A monthly cron job (`fmp/scripts/snapshot_estimates.py`) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`). Writes prefer `FMP_DATA_WRITE_DATABASE_URL`; reads prefer `FMP_DATA_READ_DATABASE_URL`; `FMP_DATA_DATABASE_URL` remains as the legacy fallback. Production least-privilege deployments should set `FMP_DATA_ENSURE_SCHEMA=false` and apply schema changes separately. Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
+The Risk-local script (`scripts/snapshot_estimates.py`, outside the installed package) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`). Writes prefer `FMP_DATA_WRITE_DATABASE_URL`; reads prefer `FMP_DATA_READ_DATABASE_URL`; `FMP_DATA_DATABASE_URL` remains as the legacy fallback. Production least-privilege deployments should set `FMP_DATA_ENSURE_SCHEMA=false` and apply schema changes separately. Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
 
 ### Usage (local fallback / collector — not the MCP primary path)
 
@@ -546,19 +545,19 @@ Two query tools are available via the `fmp-mcp` server:
 
 ```bash
 # Full universe collection (monthly cron) — uses bulk∩screener intersection by default
-python3 fmp/scripts/snapshot_estimates.py
+python3 scripts/snapshot_estimates.py
 
 # Use screener-only universe (legacy, no bulk filtering)
-python3 fmp/scripts/snapshot_estimates.py --universe-source screener
+python3 scripts/snapshot_estimates.py --universe-source screener
 
 # Test with specific tickers
-python3 fmp/scripts/snapshot_estimates.py --tickers AAPL,NVDA,MSFT
+python3 scripts/snapshot_estimates.py --tickers AAPL,NVDA,MSFT
 
 # Force re-snapshot (bypass freshness check)
-python3 fmp/scripts/snapshot_estimates.py --tickers AAPL --force
+python3 scripts/snapshot_estimates.py --tickers AAPL --force
 
 # Override DB connection for one run
-python3 fmp/scripts/snapshot_estimates.py --database-url postgresql://postgres@localhost:5432/fmp_data_db
+python3 scripts/snapshot_estimates.py --database-url postgresql://postgres@localhost:5432/fmp_data_db
 
 # Key flags
 #   --universe-source bulk  Universe method: bulk (screener∩earnings-surprises-bulk) or screener

@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server for FMP (Financial Modeling Prep) API.
 Exposes financial data tools for AI assistant invocation.
 
 Setup:
-    cd ./risk_module
+    pip install fmp-mcp
     claude mcp add fmp-mcp -- fmp-mcp
 
 Usage:
@@ -26,29 +26,6 @@ sys.stdout = sys.stderr  # All prints/logs now go to stderr
 import json
 from typing import Any
 from typing import Literal, Optional
-
-# --- bootstrap_env path discovery (auto-injected for `python3 path/to/file.py` invocations) ---
-import sys as _bootstrap_sys
-from pathlib import Path as _BootstrapPath
-_p = _BootstrapPath(__file__).resolve()
-while _p.parent != _p:
-    if (_p / "bootstrap_env.py").exists():
-        if str(_p) not in _bootstrap_sys.path:
-            _bootstrap_sys.path.insert(0, str(_p))
-        break
-    _p = _p.parent
-del _p, _bootstrap_sys, _BootstrapPath
-# --- end auto-injected ---
-
-# Monorepo-only env bootstrap; the standalone fmp-mcp wheel has no
-# bootstrap_env module and takes FMP_API_KEY from the process environment.
-try:
-    import bootstrap_env
-except ImportError:
-    bootstrap_env = None
-
-if bootstrap_env is not None:
-    bootstrap_env.bootstrap(required=["FMP_API_KEY"])
 
 from fastmcp import FastMCP
 

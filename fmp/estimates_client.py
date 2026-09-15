@@ -9,12 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-try:
-    from app_platform.api_budget import guard_call
-except ImportError:
-    def guard_call(*, fn, args=(), kwargs=None, **_):
-        """No-op fallback when app_platform.api_budget isn't installed (dist runtime)."""
-        return fn(*args, **(kwargs or {}))
+from .client import guard_call
 
 import requests as _requests
 

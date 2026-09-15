@@ -48,7 +48,7 @@ Tool surface below was verified against `fmp/server.py` on 2026-04-30. The repo 
 pip install fmp-mcp
 ```
 
-Optional estimate-revision tools (requires PostgreSQL):
+Optional local estimate storage (requires PostgreSQL; hosted MCP reads do not):
 
 ```bash
 pip install "fmp-mcp[estimates]"
@@ -67,13 +67,51 @@ Optional settings:
 - `FMP_CACHE_DIR` — Custom cache directory (default: `~/.cache/fmp-mcp/`)
 - `FMP_CACHE_MAXSIZE` — Max in-memory cache entries (default: 200)
 
+## Application integration
+
+The installed `fmp-mcp` distribution owns the `fmp` import. It does not search
+for a Risk checkout, load a checkout `.env`, or import application policy.
+The source package lives at Risk's `fmp-mcp/`; install it into a development
+interpreter with `uv pip install --python .venv/bin/python --no-deps -e ./fmp-mcp`
+from the Risk root.
+
+Applications may configure these callbacks at startup:
+
+- `fmp.client.configure_client(budget_guard=..., event_observer=...)`.
+  The guard accepts `fn`, `args`, `kwargs` plus provider/operation/budget
+  metadata. The observer receives `(event, endpoint, **details)`, where event
+  is `success` (`duration_ms`, `status`), `rate_limit`, `error` (`error`), or
+  `plan_limit` (`error`). Without callbacks, requests dispatch directly and
+  native Python logging reports rate limits and errors.
+- `fmp.tools.peers.configure_peer_tools(metric_resolver=..., peer_discovery=...,
+  spot_fx_rate=...)`. Metric resolvers return the existing structural
+  `peers`/`source`/`to_dict()` result; discovery returns ticker strings.
+  Expected policy failures raise `PeerSelectionError`. Standalone discovery
+  uses FMP `stock_peers`; metric-context selection without application policy
+  asks for explicit peers. Standalone non-USD conversion reads the latest
+  daily close of FMP's `<currency>USD` pair. The optional FX callback returns
+  a currency-to-USD rate.
+
+Risk binds all five callbacks at its single `bootstrap_env` composition point;
+its logging, billing, peer selection, and exchange-mapping policy remain
+application code. `scripts/run_fmp_server.py` owns Risk credential hydration
+before invoking the installed server. Risk-only wrappers live in
+`utils/fmp_compat.py` and `utils/fmp_fx.py`, and its local collector lives in
+`scripts/snapshot_estimates.py`.
+
+The source retains the Hank-only `transcript_kpi_fetcher.py` and
+`manifest_source_dispatcher.py`; public distribution sync excludes them.
+Their application consumers require the separately installed named industry
+and value-semantics libraries. Sync copies source bytes without vendoring or
+rewriting imports.
+
 ## Run
 
 ```bash
 fmp-mcp
 ```
 
-Or register it with Claude Code from the repo root:
+Or register the installed package with Claude Code from any directory:
 
 ```bash
 claude mcp add fmp-mcp --scope user \

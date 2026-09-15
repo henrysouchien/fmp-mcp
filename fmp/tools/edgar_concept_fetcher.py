@@ -1,11 +1,9 @@
-"""Fetch annual EDGAR concept values through the sibling edgar-parser API."""
+"""Fetch annual EDGAR concept values through the installed edgar-parser API."""
 
 from __future__ import annotations
 
 import importlib
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 
@@ -48,13 +46,7 @@ def fetch_concept(
 
 
 def _load_get_metric() -> Any:
-    try:
-        return importlib.import_module("edgar_parser.tools").get_metric
-    except ModuleNotFoundError:
-        sibling_root = Path(__file__).resolve().parents[3] / "edgar-parser"
-        if sibling_root.exists():
-            sys.path.insert(0, str(sibling_root))
-        return importlib.import_module("edgar_parser.tools").get_metric
+    return importlib.import_module("edgar_parser.tools").get_metric
 
 
 def _first_match_value(payload: dict[str, Any]) -> float | None:

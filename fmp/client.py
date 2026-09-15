@@ -53,22 +53,27 @@ from .registry import (
 
 logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
-def _resolve_guard_call():
-    """Resolve the monorepo budget guard only when a request is dispatched."""
-    try:
-        from app_platform.api_budget import guard_call as platform_guard_call
-    except ImportError:
-        return None
-    return platform_guard_call
+_budget_guard: Callable | None = None
+_event_observer: Callable | None = None
+
+
+def configure_client(*, budget_guard: Callable | None = None, event_observer: Callable | None = None) -> None:
+    """Bind application budget and event callbacks; standalone calls use native logging."""
+    global _budget_guard, _event_observer
+    _budget_guard = budget_guard
+    _event_observer = event_observer
+
+
+def _observe(event: str, endpoint: str, **details: Any) -> None:
+    if _event_observer is not None:
+        _event_observer(event, endpoint, **details)
 
 
 def guard_call(*, fn, args=(), kwargs=None, **guard_kwargs):
-    """Run through the budget guard when available, otherwise call directly."""
-    platform_guard_call = _resolve_guard_call()
-    if platform_guard_call is None:
+    """Dispatch through the application budget owner, or directly when standalone."""
+    if _budget_guard is None:
         return fn(*args, **(kwargs or {}))
-    return platform_guard_call(
+    return _budget_guard(
         fn=fn,
         args=args,
         kwargs=kwargs,
@@ -179,7 +184,7 @@ class FMPClient:
     Unified client for FMP API access.
 
     Called by:
-    - ``fmp.compat`` wrappers for backward compatibility
+    - Application-owned price/FX wrappers
     - Direct callers using ``from fmp import fetch, get_client``
 
     Example usage:
@@ -374,11 +379,9 @@ class FMPClient:
         # Log successful request
         self._log_success(endpoint.name, response_time)
         try:
-            from app_platform.logging.core import log_timing_event
-
-            log_timing_event(
-                kind="dependency",
-                name=f"fmp:{endpoint.name}",
+            _observe(
+                "success",
+                endpoint.name,
                 duration_ms=response_time * 1000,
                 status=resp.status_code,
             )
@@ -396,16 +399,8 @@ class FMPClient:
 
     def _log_rate_limit(self, endpoint_name: str) -> None:
         """Log rate limit hit."""
-        try:
-            from utils.logging import log_rate_limit_hit, log_service_health
-
-            log_rate_limit_hit(None, endpoint_name, "api_calls", None, "free")
-            log_service_health("FMP_API", "degraded", 0, {"error": "rate_limited"})
-        except ImportError:
-            logger.warning(
-                "FMP API rate limit for %s: service degraded",
-                endpoint_name,
-            )
+        logger.warning("FMP API rate limit for %s: service degraded", endpoint_name)
+        _observe("rate_limit", endpoint_name)
 
     def _log_success(self, endpoint_name: str, response_time: float) -> None:
         """Suppress healthy-call logs to keep output high signal."""
@@ -414,33 +409,13 @@ class FMPClient:
 
     def _log_error(self, endpoint_name: str, error: str) -> None:
         """Log API error."""
-        try:
-            from utils.logging import log_critical_alert, log_service_health
-
-            log_critical_alert(
-                "fmp_api_error",
-                "high",
-                f"FMP API error for {endpoint_name}: {error}",
-                "Check API status and retry",
-            )
-            log_service_health("FMP_API", "down", 0, {"error": error})
-        except ImportError:
-            logger.error("FMP API error for %s: %s", endpoint_name, error)
+        logger.error("FMP API error for %s: %s", endpoint_name, error)
+        _observe("error", endpoint_name, error=error)
 
     def _log_plan_limited(self, endpoint_name: str, error: str) -> None:
         """Log entitlement/plan-limit errors (HTTP 402)."""
-        try:
-            from utils.logging import log_critical_alert, log_service_health
-
-            log_critical_alert(
-                "fmp_plan_limit",
-                "medium",
-                f"FMP plan limit for {endpoint_name}: {error}",
-                "Use fallback provider or upgrade FMP plan",
-            )
-            log_service_health("FMP_API", "degraded", 0, {"error": error})
-        except ImportError:
-            logger.warning("FMP plan limit for %s: %s", endpoint_name, error)
+        logger.warning("FMP plan limit for %s: %s", endpoint_name, error)
+        _observe("plan_limit", endpoint_name, error=error)
 
     def _build_cache_key(
         self,

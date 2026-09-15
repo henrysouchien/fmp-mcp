@@ -37,9 +37,6 @@ Convenience Functions:
     prices = fetch("historical_price_adjusted", symbol="AAPL")
     client = get_client()  # Shared client instance
 
-Backward Compatibility:
-    from fmp.compat import fetch_monthly_close, fetch_monthly_total_return_price
-
 Available Endpoints:
     - prices: historical_price_eod, historical_price_adjusted
     - treasury: treasury_rates
@@ -48,6 +45,8 @@ Available Endpoints:
     - fundamentals: income_statement, balance_sheet, cash_flow, key_metrics
     - analyst: analyst_estimates, price_target
 """
+
+__version__ = "0.5.3"
 
 from .client import FMPClient, fetch, fetch_with_lineage, get_client
 from .definitions import (
