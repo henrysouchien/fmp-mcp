@@ -3,6 +3,11 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.5] — 2026-09-16
+
+### Changed
+- Admits PyArrow 23–25 (`>=23.0.1,<26`) with unchanged parquet cache behavior.
+
 ## [0.5.4] — 2026-09-16
 
 ### Fixed
