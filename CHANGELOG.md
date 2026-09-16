@@ -3,6 +3,12 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.4] — 2026-09-16
+
+### Fixed
+- Optional PostgreSQL driver imports occur only when using `EstimateStore` database operations; every shipped library module imports without the `estimates` extra.
+- Supersedes 0.5.3, whose registry-only import proof exposed the eager optional-driver dependency.
+
 ## [0.5.3] — 2026-09-16
 
 ### Changed

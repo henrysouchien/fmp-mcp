@@ -18,13 +18,11 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-import psycopg2
-from psycopg2 import OperationalError
-from psycopg2.extras import Json, RealDictCursor
-from psycopg2.extensions import connection as PsycopgConnection
-from psycopg2.pool import SimpleConnectionPool
+if TYPE_CHECKING:
+    from psycopg2.extensions import connection as PsycopgConnection
+    from psycopg2.pool import SimpleConnectionPool
 
 
 _DEFAULT_DATABASE_URL = "postgresql://postgres@localhost:5432/fmp_data_db"
@@ -143,6 +141,9 @@ class EstimateStore:
         read_only: bool = False,
         ensure_schema: bool | None = None,
     ):
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+
         self.database_url = resolve_estimate_database_url(database_url, read_only=read_only)
         self.read_only = read_only
         self.ensure_schema = False if read_only else should_ensure_estimate_schema(ensure_schema)
@@ -162,7 +163,7 @@ class EstimateStore:
                 self._apply_session_settings(self.conn, read_only=False)
                 if self.ensure_schema:
                     self._ensure_schema()
-        except OperationalError:
+        except psycopg2.OperationalError:
             if self.read_only:
                 self._available = False
                 self.conn = None
@@ -173,6 +174,9 @@ class EstimateStore:
     def _get_reader_pool(cls, database_url: str) -> SimpleConnectionPool:
         pool = cls._reader_pools.get(database_url)
         if pool is None:
+            from psycopg2.extras import RealDictCursor
+            from psycopg2.pool import SimpleConnectionPool
+
             pool = SimpleConnectionPool(1, 3, database_url, cursor_factory=RealDictCursor)
             cls._reader_pools[database_url] = pool
         return pool
@@ -280,6 +284,8 @@ class EstimateStore:
 
     def create_run(self, universe: list[str], universe_source: str = "screener") -> int:
         """Create a new snapshot run and return run_id."""
+        from psycopg2.extras import Json
+
         self._require_write()
         assert self.conn is not None
 
@@ -304,6 +310,8 @@ class EstimateStore:
 
     def update_run(self, run_id: int, **kwargs: Any) -> None:
         """Update fields on an existing run row."""
+        from psycopg2.extras import Json
+
         self._require_write()
         assert self.conn is not None
 
@@ -361,6 +369,8 @@ class EstimateStore:
         If ``snapshot_date`` is provided it is used for all rows, ensuring a
         consistent date across an entire run even if execution crosses midnight.
         """
+        from psycopg2.extras import Json
+
         self._require_write()
         assert self.conn is not None
 

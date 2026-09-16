@@ -50,7 +50,7 @@ Available Endpoints:
     - analyst: analyst_estimates, price_target
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 from .client import FMPClient, fetch, fetch_with_lineage, get_client
 from .definitions import (
