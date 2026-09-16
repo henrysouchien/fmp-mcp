@@ -3,6 +3,11 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.6] — 2026-09-16
+
+### Fixed
+- Excludes PyArrow 25.0.0, whose bundled allocator crashes when first imported on a worker thread that exits (Apache Arrow #50471). PyArrow 25.0.1 remains supported.
+
 ## [0.5.5] — 2026-09-16
 
 ### Changed
