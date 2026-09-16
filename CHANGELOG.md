@@ -3,14 +3,16 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
-## [0.5.3] — Unreleased
+## [0.5.3] — 2026-09-16
 
 ### Changed
+- Supports both FastMCP 3 and 4 with `fastmcp>=3.1,<5`; the MCP tool surface is unchanged.
 - Source is a nested, installable `fmp-mcp` package; the Risk root no longer claims `fmp`.
 - Shared helpers and standalone imports are owned in source rather than synthesized during public sync.
 - Application budget, telemetry, peer discovery and FX policies are supplied through explicit startup callbacks; the public server reads its process environment without checkout discovery.
 - Risk-only compatibility/FX wrappers and the snapshot launcher moved to the application. Public sync excludes the two Hank-only tool modules and package tests.
 - Distribution sync mirrors only the package subtree with deletion, leaving repository metadata and published artifacts untouched.
+- Declares the public `value-semantics-core>=2.1,<3` dependency, so registry-only installs import the shipped helpers without a Hank checkout.
 
 ## [0.5.0] — 2026-08-20
 
