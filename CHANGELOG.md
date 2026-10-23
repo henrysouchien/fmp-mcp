@@ -3,6 +3,11 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.7] — 2026-10-23
+
+### Added
+- `FMPClient.fetch` and `fetch_with_lineage` report a request answered from the disk cache to the configured event observer as `cache_hit` (endpoint name, validated `params`), so a host can count cache hits beside network calls. No new dependency; without an observer nothing changes.
+
 ## [0.5.6] — 2026-09-16
 
 ### Fixed

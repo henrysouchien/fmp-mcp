@@ -6,6 +6,7 @@ Institutional ownership analytics for a single symbol.
 
 from ._helpers import safe_float_or_none as _safe_float
 
+import contextvars
 import datetime as dt
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +14,7 @@ from typing import Literal, Optional
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
+from ..lineage import returns_vendor_lineage
 
 
 def _first_non_null(record: dict, keys: list[str]):
@@ -169,6 +171,7 @@ def _format_holder_summary(records: list[dict], limit: int) -> list[dict]:
     return holders[:limit]
 
 
+@returns_vendor_lineage("get_institutional_ownership")
 def get_institutional_ownership(
     symbol: str,
     year: Optional[int] = None,
@@ -181,7 +184,7 @@ def get_institutional_ownership(
     Get institutional ownership analytics for a stock.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL").
+        symbol: Stock symbol (e.g., "<TICKER>").
         year: Optional filing year. Defaults with quarter to latest due 13F period.
         quarter: Optional filing quarter (1-4). Defaults with year to latest due 13F period.
         limit: Max holder rows to return in summary mode.
@@ -198,7 +201,7 @@ def get_institutional_ownership(
         if not normalized_symbol:
             return {
                 "status": "error",
-                "error": "symbol is required. Specify a stock symbol (e.g., 'AAPL').",
+                "error": "symbol is required. Specify a stock symbol (e.g., '<TICKER>').",
             }
 
         limit = max(1, min(100, int(limit)))
@@ -238,6 +241,7 @@ def get_institutional_ownership(
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
                 executor.submit(
+                    contextvars.copy_context().run,
                     _safe_fetch_records,
                     client,
                     endpoint_name,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from fmp.lineage import VendorResponse, active_vendor_response_log, vendor_response_log
 from fmp.tools.fmp_core import fmp_fetch
 
 
@@ -16,7 +17,10 @@ _ANNUAL_ENDPOINTS = (
     "key_metrics",
     "ratios",
 )
-_CACHE: dict[tuple[str, int], tuple[datetime, tuple[dict[str, Any], dict[str, str]]]] = {}
+_CACHE: dict[
+    tuple[str, int],
+    tuple[datetime, tuple[dict[str, Any], dict[str, str]], tuple[VendorResponse, ...]],
+] = {}
 
 
 def fetch_peer_annual_bundle(
@@ -31,23 +35,26 @@ def fetch_peer_annual_bundle(
     now = datetime.now(UTC)
     cached = _CACHE.get(key)
     if cached and now - cached[0] < _TTL:
+        # A cached bundle still answers from the responses it was built from.
+        active_vendor_response_log().extend(cached[2])
         return cached[1]
 
     retrieved_at_by_endpoint: dict[str, str] = {}
     bundle: dict[str, Any] = {}
-    for endpoint in _ANNUAL_ENDPOINTS:
-        retrieved_at = datetime.now(UTC).isoformat()
-        retrieved_at_by_endpoint[endpoint] = retrieved_at
-        response = fmp_fetch(
-            endpoint,
-            symbol=normalized_ticker,
-            period="annual",
-            limit=12,
-        )
-        bundle[endpoint] = _matching_fiscal_year_row(response, normalized_year)
+    with vendor_response_log() as responses:
+        for endpoint in _ANNUAL_ENDPOINTS:
+            retrieved_at = datetime.now(UTC).isoformat()
+            retrieved_at_by_endpoint[endpoint] = retrieved_at
+            response = fmp_fetch(
+                endpoint,
+                symbol=normalized_ticker,
+                period="annual",
+                limit=12,
+            )
+            bundle[endpoint] = _matching_fiscal_year_row(response, normalized_year)
 
     result = (bundle, retrieved_at_by_endpoint)
-    _CACHE[key] = (now, result)
+    _CACHE[key] = (now, result, responses.responses)
     return result
 
 

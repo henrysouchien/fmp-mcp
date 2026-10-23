@@ -20,6 +20,7 @@ Architecture note:
 - stdout is redirected to stderr to protect MCP JSON-RPC channel from stray prints
 """
 
+import contextvars
 import math
 import re
 import sys
@@ -31,6 +32,7 @@ import pandas as pd
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
+from ..lineage import returns_vendor_lineage
 from ._file_output import FILE_OUTPUT_DIR, write_csv
 from ._helpers import _last_trading_day, safe_float_or_none as _safe_float
 from fmp._shared.fmp_helpers import (
@@ -233,6 +235,7 @@ def _format_calendar_summary(data: list[dict]) -> dict:
     }
 
 
+@returns_vendor_lineage("get_economic_data")
 def get_economic_data(
     mode: Literal["indicator", "calendar"] = "indicator",
     indicator_name: Optional[str] = None,
@@ -519,6 +522,7 @@ PE_PREMIUM_THRESHOLD_PCT = 5.0
 # ---------------------------------------------------------------------------
 
 
+@returns_vendor_lineage("get_sector_overview")
 def get_sector_overview(
     date: Optional[str] = None,
     sector: Optional[str] = None,
@@ -737,7 +741,7 @@ def _fetch_symbol_pe_comparison(
             "status": "error",
             "error": (
                 "No valid symbols provided. Pass a non-empty list like "
-                "symbols=['AAPL', 'MSFT']."
+                "symbols=['<TICKER_A>', '<TICKER_B>']."
             ),
         }
 
@@ -791,7 +795,13 @@ def _fetch_symbol_pe_comparison(
 
     with ThreadPoolExecutor(max_workers=min(len(normalized_symbols), 5)) as executor:
         futures = {
-            executor.submit(_fetch_symbol_data, client, symbol, use_cache): symbol
+            executor.submit(
+                contextvars.copy_context().run,
+                _fetch_symbol_data,
+                client,
+                symbol,
+                use_cache,
+            ): symbol
             for symbol in normalized_symbols
         }
         for future in as_completed(futures):

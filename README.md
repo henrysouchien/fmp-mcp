@@ -71,9 +71,9 @@ Optional settings:
 
 The installed `fmp-mcp` distribution owns the `fmp` import. It does not search
 for a Risk checkout, load a checkout `.env`, or import application policy.
-The source package lives at Risk's `fmp-mcp/`; install it into a development
-interpreter with `uv pip install --python .venv/bin/python --no-deps -e ./fmp-mcp`
-from the Risk root.
+The source package lives at Risk's `fmp-mcp/`. Install it from the Risk root
+with the single editable list, `.venv/bin/python -m pip install --no-deps -r requirements-local.txt`,
+which also installs `brokerage-connect`. Dev tools come from `requirements-dev.txt`.
 
 Applications must explicitly configure the client once at startup before any
 network fetch. An unconfigured client refuses dispatch and names the required

@@ -1,5 +1,12 @@
 """FMP MCP tool implementations."""
 
+from .bond_calendar import (
+    get_bond_market_calendar,
+    get_sifma_holiday_entry,
+    is_bond_market_session,
+    last_bond_market_session,
+    load_sifma_schedule,
+)
 from .estimates import get_estimate_revisions, screen_estimate_revisions
 from .etf_funds import get_etf_holdings
 from .fmp_core import (
@@ -21,6 +28,11 @@ from .technical import get_technical_analysis
 from .transcripts import get_earnings_transcript
 
 __all__ = [
+    "get_bond_market_calendar",
+    "get_sifma_holiday_entry",
+    "is_bond_market_session",
+    "last_bond_market_session",
+    "load_sifma_schedule",
     "fmp_fetch",
     "fmp_search",
     "fmp_profile",

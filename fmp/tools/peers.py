@@ -4,8 +4,8 @@ MCP Tool: compare_peers
 Exposes peer comparison as an MCP tool for AI invocation.
 
 Usage (from Claude):
-    "Compare AAPL to its peers" -> compare_peers(symbol="AAPL")
-    "Compare NVDA against MSFT and AMD" -> compare_peers(symbol="NVDA", peers="MSFT,AMD")
+    "Compare <TICKER> to its peers" -> compare_peers(symbol="<TICKER>")
+    "Compare <TICKER_A> against <TICKER_B> and <TICKER_C>" -> compare_peers(symbol="<TICKER_A>", peers="<TICKER_B>,<TICKER_C>")
 
 Architecture note:
 - Standalone tool (no portfolio loading, no user context required)
@@ -13,6 +13,7 @@ Architecture note:
 - stdout is redirected to stderr to protect MCP JSON-RPC channel from stray prints
 """
 
+import contextvars
 import copy
 import logging
 import re
@@ -25,6 +26,11 @@ from typing import Any, Callable, Optional, Literal
 from cachetools import TTLCache
 
 from ..client import FMPClient
+from ..lineage import (
+    active_vendor_response_log,
+    returns_vendor_lineage,
+    vendor_response_log,
+)
 from fmp._shared.fmp_helpers import (
     compute_forward_ev_sales,
     compute_forward_pe,
@@ -175,6 +181,7 @@ def _fetch_ratios_and_estimates(
         raw_payloads = cached_snapshot.get("raw_payloads_per_endpoint")
         retrieved_at = cached_snapshot.get("retrieved_at")
         if isinstance(merged, dict) and isinstance(raw_payloads, dict):
+            active_vendor_response_log().extend(cached_snapshot["vendor_responses"])
             return (
                 normalized_ticker,
                 merged,
@@ -185,6 +192,26 @@ def _fetch_ratios_and_estimates(
         # Defensive compatibility for cache entries created before the shape change.
         return (normalized_ticker, cached_snapshot, {}, None, None)
 
+    with vendor_response_log() as ticker_log:
+        fetched = _fetch_uncached_ratios_and_estimates(fmp, normalized_ticker)
+    _, merged, raw_payloads, retrieved_at, _ = fetched
+    if merged is not None:
+        _store_peer_metric_snapshot(
+            normalized_ticker,
+            {
+                "merged_dict": merged,
+                "raw_payloads_per_endpoint": raw_payloads,
+                "retrieved_at": retrieved_at,
+                "vendor_responses": ticker_log.responses,
+            },
+        )
+    return fetched
+
+
+def _fetch_uncached_ratios_and_estimates(
+    fmp: FMPClient,
+    normalized_ticker: str,
+) -> tuple[str, dict | None, dict[str, object], str | None, str | None]:
     ABSOLUTE_METRICS = {
         "_ttm_revenue",
         "_ttm_ebitda",
@@ -249,7 +276,12 @@ def _fetch_ratios_and_estimates(
 
         with ThreadPoolExecutor(max_workers=len(request_specs)) as executor:
             future_map = {
-                label: executor.submit(_fetch, endpoint, **params)
+                label: executor.submit(
+                    contextvars.copy_context().run,
+                    _fetch,
+                    endpoint,
+                    **params,
+                )
                 for label, (endpoint, params) in request_specs.items()
             }
             responses = {
@@ -442,12 +474,6 @@ def _fetch_ratios_and_estimates(
             },
         }
 
-        snapshot = {
-            "merged_dict": merged,
-            "raw_payloads_per_endpoint": raw_payloads_per_endpoint,
-            "retrieved_at": retrieved_at,
-        }
-        _store_peer_metric_snapshot(normalized_ticker, snapshot)
         return (
             normalized_ticker,
             merged,
@@ -560,6 +586,7 @@ def _build_annual_metric_comparison(
     with ThreadPoolExecutor(max_workers=min(len(tickers_order), 8) or 1) as executor:
         futures = {
             executor.submit(
+                contextvars.copy_context().run,
                 _fetch_annual_dividend_payout_row,
                 fmp,
                 ticker,
@@ -728,6 +755,7 @@ def _number_or_none(value: object) -> float | None:
 
 # === Tool ===
 
+@returns_vendor_lineage("compare_peers")
 def compare_peers(
     symbol: str,
     peers: Optional[str] = None,
@@ -744,8 +772,8 @@ def compare_peers(
     Compare a stock against its peers on key financial ratios.
 
     Args:
-        symbol: Stock symbol to compare (e.g., "AAPL").
-        peers: Optional comma-separated peer tickers (e.g., "MSFT,GOOGL,META").
+        symbol: Stock symbol to compare (e.g., "<TICKER>").
+        peers: Optional comma-separated peer tickers (e.g., "<TICKER_A>,<TICKER_B>,<TICKER_C>").
             If not provided, peers are auto-discovered via FMP stock-peers endpoint.
         limit: Maximum number of peers to include (default: 5, max: 10).
         format: "summary" for comparison table with key metrics,
@@ -789,7 +817,7 @@ def compare_peers(
                     "error": (
                         f"Metric-based peer resolution is unavailable for {symbol} in "
                         "this deployment. Provide peers manually with the 'peers' "
-                        "parameter (e.g., peers='MSFT,GOOGL,META')."
+                        "parameter (e.g., peers='<TICKER_A>,<TICKER_B>,<TICKER_C>')."
                     ),
                 }
             try:
@@ -810,7 +838,7 @@ def compare_peers(
                     "error": (
                         f"No peers found for {symbol}. This endpoint works best for "
                         "US large/mid-cap stocks. Try providing peers manually with "
-                        "the 'peers' parameter (e.g., peers='MSFT,GOOGL,META')."
+                        "the 'peers' parameter (e.g., peers='<TICKER_A>,<TICKER_B>,<TICKER_C>')."
                     ),
                 }
             except Exception as e:
@@ -859,7 +887,7 @@ def compare_peers(
                     "error": (
                         f"No peers found for {symbol}. This endpoint works best for "
                         "US large/mid-cap stocks. Try providing peers manually with "
-                        "the 'peers' parameter (e.g., peers='MSFT,GOOGL,META')."
+                        "the 'peers' parameter (e.g., peers='<TICKER_A>,<TICKER_B>,<TICKER_C>')."
                     ),
                 }
 
@@ -880,7 +908,12 @@ def compare_peers(
 
         with ThreadPoolExecutor(max_workers=min(len(all_tickers), 6)) as executor:
             futures = {
-                executor.submit(_fetch_ratios_and_estimates, fmp, ticker): ticker
+                executor.submit(
+                    contextvars.copy_context().run,
+                    _fetch_ratios_and_estimates,
+                    fmp,
+                    ticker,
+                ): ticker
                 for ticker in all_tickers
             }
             for future in as_completed(futures):

@@ -6,12 +6,14 @@ Insider trade flow and statistics for a single symbol.
 
 from ._helpers import safe_float_or_none as _safe_float
 
+import contextvars
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
+from ..lineage import returns_vendor_lineage
 
 
 def _first_non_null(record: dict, keys: list[str]):
@@ -139,6 +141,7 @@ def _format_trade_summary(records: list[dict], limit: int) -> list[dict]:
     return trades[:limit]
 
 
+@returns_vendor_lineage("get_insider_trades")
 def get_insider_trades(
     symbol: str,
     limit: int = 20,
@@ -149,7 +152,7 @@ def get_insider_trades(
     Get insider trade activity and statistics for a stock.
 
     Args:
-        symbol: Stock symbol (required, e.g., "AAPL").
+        symbol: Stock symbol (required, e.g., "<TICKER>").
         limit: Max trades returned in summary mode.
         format: "summary" for normalized trades, "full" for raw records.
         use_cache: Use cached FMP data when available.
@@ -164,7 +167,7 @@ def get_insider_trades(
         if not normalized_symbol:
             return {
                 "status": "error",
-                "error": "symbol is required. Specify a stock symbol (e.g., 'AAPL').",
+                "error": "symbol is required. Specify a stock symbol (e.g., '<TICKER>').",
             }
 
         limit = max(1, min(100, int(limit)))
@@ -196,6 +199,7 @@ def get_insider_trades(
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
                 executor.submit(
+                    contextvars.copy_context().run,
                     _safe_fetch_records,
                     client,
                     endpoint_name,

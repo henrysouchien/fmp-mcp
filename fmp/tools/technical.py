@@ -5,10 +5,10 @@ Composite technical analysis for a single stock: trend direction,
 momentum signals, volatility, and support/resistance levels.
 
 Usage (from Claude):
-    "Technical analysis for AAPL"
-    "Is TSLA overbought?"
-    "What's the trend for MSFT?"
-    "Show me MACD and RSI for NVDA"
+    "Technical analysis for <TICKER>"
+    "Is <TICKER> overbought?"
+    "What's the trend for <TICKER>?"
+    "Show me MACD and RSI for <TICKER>"
 
 Architecture note:
 - Standalone ticker tool (no portfolio loading required)
@@ -67,7 +67,7 @@ def get_technical_analysis(
     Get composite technical analysis for a single stock.
 
     Args:
-        symbol: Stock ticker (e.g., "AAPL", "MSFT").
+        symbol: Stock ticker (e.g., "<TICKER>").
         timeframe: Candle timeframe (default "1day").
         indicators: Subset of indicators to include. Options: "sma", "ema",
             "rsi", "adx", "williams", "macd", "bollinger". Default: all.

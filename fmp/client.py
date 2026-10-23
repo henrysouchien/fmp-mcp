@@ -42,6 +42,7 @@ from .lineage import (
     build_vendor_request_sha256,
     build_vendor_response_descriptor,
     dataframe_records,
+    record_vendor_response,
 )
 from .registry import (
     CacheRefresh,
@@ -412,6 +413,13 @@ class FMPClient:
         logger.warning("FMP API rate limit for %s: service degraded", endpoint_name)
         _observe("rate_limit", endpoint_name)
 
+    def _observe_cache_hit(self, endpoint_name: str, params: dict[str, Any]) -> None:
+        """Report a request answered from the disk cache; observers never fail a fetch."""
+        try:
+            _observe("cache_hit", endpoint_name, params=dict(params))
+        except Exception:
+            pass
+
     def _log_success(self, endpoint_name: str, response_time: float) -> None:
         """Suppress healthy-call logs to keep output high signal."""
         _ = endpoint_name
@@ -492,11 +500,14 @@ class FMPClient:
         allow_empty: bool = False,
     ) -> Callable[[], pd.DataFrame]:
         def load() -> pd.DataFrame:
-            data = self._make_request(
-                endpoint,
-                validated_params,
-                budget_user_id=budget_user_id,
-            )
+            if endpoint.handler is not None:
+                data = endpoint.handler(validated_params)
+            else:
+                data = self._make_request(
+                    endpoint,
+                    validated_params,
+                    budget_user_id=budget_user_id,
+                )
             try:
                 return _normalize_response(
                     endpoint,
@@ -564,15 +575,26 @@ class FMPClient:
 
         # Check if caching is disabled for this endpoint
         if not use_cache or not endpoint.cache_enabled:
-            return loader()
+            dataframe = loader()
+        else:
+            loaded = False
 
-        return self.cache.read(
-            key=cache_key,
-            loader=loader,
-            cache_dir=endpoint.cache_dir,
-            prefix=prefix,
-            ttl_hours=endpoint.cache_ttl_hours,
-        )
+            def counted_loader() -> pd.DataFrame:
+                nonlocal loaded
+                loaded = True
+                return loader()
+
+            dataframe = self.cache.read(
+                key=cache_key,
+                loader=counted_loader,
+                cache_dir=endpoint.cache_dir,
+                prefix=prefix,
+                ttl_hours=endpoint.cache_ttl_hours,
+            )
+            if not loaded:
+                self._observe_cache_hit(endpoint_name, validated_params)
+        record_vendor_response(endpoint_name, validated_params, dataframe)
+        return dataframe
 
     def fetch_with_lineage(
         self,
@@ -640,7 +662,10 @@ class FMPClient:
             dataframe = cache_result.dataframe
             source = cache_result.source
             observed_at = cache_result.observed_at
+            if source == "cache":
+                self._observe_cache_hit(endpoint_name, validated_params)
 
+        record_vendor_response(endpoint_name, validated_params, dataframe)
         return FMPFetchResult(
             endpoint=endpoint_name,
             validated_params=validated_params,
@@ -672,11 +697,16 @@ class FMPClient:
             raise FMPEndpointError(endpoint_name)
 
         validated_params = endpoint.build_params(**params)
-        return self._make_request(
-            endpoint,
-            validated_params,
-            budget_user_id=budget_user_id,
-        )
+        if endpoint.handler is not None:
+            payload = endpoint.handler(validated_params)
+        else:
+            payload = self._make_request(
+                endpoint,
+                validated_params,
+                budget_user_id=budget_user_id,
+            )
+        record_vendor_response(endpoint_name, validated_params, payload)
+        return payload
 
     def list_endpoints(self, category: str | None = None) -> list[dict[str, str]]:
         """

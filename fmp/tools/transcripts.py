@@ -1027,7 +1027,7 @@ def _get_cache_path(symbol: str, year: int, quarter: int) -> Path:
     Build path for parsed transcript JSON cache.
 
     Format: cache/transcripts_parsed/{SYMBOL}_{Q}Q{YY}_v{VERSION}_transcript_parsed.json
-    Example: cache/transcripts_parsed/AAPL_4Q24_v6_transcript_parsed.json
+    Example: cache/transcripts_parsed/<TICKER>_4Q24_v6_transcript_parsed.json
     """
     return PARSED_CACHE_DIR / (
         f"{symbol.upper()}_{quarter}Q{year % 100:02d}_v{PARSER_VERSION}_transcript_parsed.json"

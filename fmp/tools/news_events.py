@@ -198,7 +198,7 @@ def get_news(
                 "status": "error",
                 "error": (
                     f"symbols is required for mode='{mode}'. "
-                    "Specify symbols directly (e.g., symbols='AAPL,MSFT')."
+                    "Specify symbols directly (e.g., symbols='<TICKER_A>,<TICKER_B>')."
                 ),
             }
 

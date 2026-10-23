@@ -13,9 +13,10 @@ from datetime import date, timedelta
 from typing import Any, Literal
 
 from ..client import FMPClient
-from ..exceptions import FMPEmptyResponseError
+from ..exceptions import FMPEmptyResponseError, FMPValidationError
 from ..quality_signals import compute_quality_signals
 from ._helpers import _last_trading_day
+from .fmp_core import _batch_status, _resolve_symbols_list
 from .technical import get_technical_analysis
 from fmp._shared.fmp_helpers import (
     _get_last_reported_fiscal_date,
@@ -686,15 +687,17 @@ def _normalize_include(
 
 
 def get_stock_fundamentals(
-    symbol: str,
+    symbol: str | None = None,
     include: list[str] | None = None,
     format: Literal["full", "summary"] = "summary",
+    symbols: list[str] | str | None = None,
 ) -> dict:
     """
     Get enriched stock fundamentals, pricing, quality, and technical context.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL").
+        symbol: Stock symbol (e.g., "<TICKER>"). A comma-separated string is
+            treated as a batch.
         include: Optional list of sections to include. Valid sections:
             "profile", "quote", "financials", "valuation",
             "profitability", "balance_sheet", "quality", "technicals",
@@ -702,20 +705,41 @@ def get_stock_fundamentals(
             supported for the chosen format.
         format: "summary" for compact fundamentals, "full" to also include
             2-year daily chart data.
+        symbols: Up to 20 symbols (list or comma-separated string). Fetches
+            each symbol and returns results_by_symbol plus an aggregate results list.
 
     Returns:
         dict with status field ("success" or "error"), normalized section data,
         `sections_included`, `sections_failed`, and warnings for any partial
-        failures.
+        failures. When no section could be built for the symbol, `next_call`
+        points at fmp_search. Batch calls return status ("success", "partial"
+        or "error"), symbols, count, results_by_symbol and results.
     """
+    try:
+        symbol_list, is_batch = _resolve_symbols_list(symbol, symbols)
+    except FMPValidationError as exc:
+        return {"status": "error", "error": str(exc)}
+    if is_batch and symbol_list:
+        results_by_symbol = {
+            sym: get_stock_fundamentals(symbol=sym, include=include, format=format)
+            for sym in symbol_list
+        }
+        return {
+            "status": _batch_status(results_by_symbol),
+            "symbols": symbol_list,
+            "count": len(results_by_symbol),
+            "results_by_symbol": results_by_symbol,
+            "results": list(results_by_symbol.values()),
+        }
+
+    normalized_symbol = str(symbol or "").upper().strip()
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
-        normalized_symbol = str(symbol or "").upper().strip()
         if not normalized_symbol:
             return {
                 "status": "error",
-                "error": "symbol is required. Specify a stock symbol (e.g., 'AAPL').",
+                "error": "symbol is required. Specify a stock symbol (e.g., '<TICKER>').",
             }
 
         requested_sections, invalid_sections = _normalize_include(include, format)
@@ -1030,10 +1054,21 @@ def get_stock_fundamentals(
                 "Failed to build requested stock fundamental section(s): "
                 f"{failed_sections}."
             )
+            if not response["sections_included"]:
+                response["next_call"] = {
+                    "tool": "fmp_search",
+                    "arguments": {"query": normalized_symbol},
+                }
 
         return response
 
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        error_response: dict[str, Any] = {"status": "error", "error": str(exc)}
+        if normalized_symbol:
+            error_response["next_call"] = {
+                "tool": "fmp_search",
+                "arguments": {"query": normalized_symbol},
+            }
+        return error_response
     finally:
         sys.stdout = _saved

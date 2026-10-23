@@ -10,11 +10,12 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import re
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from ..client import FMPClient
-from ..exceptions import FMPEmptyResponseError
+from ..exceptions import FMPEmptyResponseError, FMPValidationError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
+from .fmp_core import _batch_status, _resolve_symbols_list
 
 
 ETF_INCLUDE_OPTIONS = [
@@ -252,28 +253,61 @@ def _summarize_disclosure(records: list[dict], limit: int) -> list[dict]:
 
 
 def get_etf_holdings(
-    symbol: str,
-    include: Optional[list[str]] = None,
-    limit: int = 25,
+    symbol: Optional[str] = None,
+    include: Optional[list[str] | str] = None,
+    limit: int = 50,
     format: Literal["summary", "full"] = "summary",
     output: Literal["inline", "file"] = "inline",
     use_cache: bool = True,
+    symbols: Optional[list[str] | str] = None,
 ) -> dict:
     """
     Get ETF holdings/allocation context across selectable sections.
 
     Args:
-        symbol: ETF symbol (e.g., "SPY", "QQQ").
+        symbol: ETF symbol (e.g., "SPY", "QQQ"). A comma-separated string is
+            treated as a batch.
         include: Optional section subset. Valid: holdings, sectors, countries,
             info, exposure, disclosure. Defaults to all.
-        limit: Max items in holdings/exposure/disclosure summary lists.
+        limit: Max items in holdings/exposure/disclosure summary lists
+            (default 50, top holdings by weight; max 1000).
         format: "summary" for normalized section output, "full" for raw data.
         output: "inline" (default) or "file". Only affects full holdings output.
         use_cache: Use cached FMP data when available.
+        symbols: Up to 20 ETF symbols (list or comma-separated string). Fans out
+            per symbol and returns results_by_symbol plus an aggregate results list.
 
     Returns:
-        dict with status field ("success" or "error").
+        dict with status field ("success" or "error"), plus total_holdings,
+        returned_holdings, total_weight_pct, held_back_count and a next_call
+        that fetches the held-back holdings (or searches for the symbol when
+        nothing came back). Batch calls return status ("success", "partial" or
+        "error"), symbols, count, results_by_symbol and results.
     """
+    try:
+        symbol_list, is_batch = _resolve_symbols_list(symbol, symbols)
+    except FMPValidationError as e:
+        return {"status": "error", "error": str(e)}
+    if is_batch and symbol_list:
+        results_by_symbol = {
+            sym: get_etf_holdings(
+                symbol=sym,
+                include=include,
+                limit=limit,
+                format=format,
+                output=output,
+                use_cache=use_cache,
+            )
+            for sym in symbol_list
+        }
+        return {
+            "status": _batch_status(results_by_symbol),
+            "symbols": symbol_list,
+            "count": len(results_by_symbol),
+            "results_by_symbol": results_by_symbol,
+            "results": list(results_by_symbol.values()),
+        }
+
     _saved = sys.stdout
     sys.stdout = sys.stderr
     try:
@@ -284,14 +318,19 @@ def get_etf_holdings(
                 "error": "symbol is required. Specify an ETF symbol (e.g., 'SPY').",
             }
 
-        limit = max(1, min(200, int(limit)))
+        limit = max(1, int(limit))
 
         invalid_sections = []
         if include is None:
             requested_sections = ETF_INCLUDE_OPTIONS.copy()
         else:
+            include_items = (
+                [s.strip() for s in include.split(",") if s.strip()]
+                if isinstance(include, str)
+                else list(include)
+            )
             requested_sections = []
-            for section in include:
+            for section in include_items:
                 if not isinstance(section, str):
                     invalid_sections.append(str(section))
                     continue
@@ -435,6 +474,26 @@ def get_etf_holdings(
                         limit,
                     )
 
+        raw_holdings = raw_sections.get("holdings", [])
+        if not isinstance(raw_holdings, list):
+            raw_holdings = []
+        total_holdings = len(raw_holdings)
+        out_holdings = sections_out.get("holdings") if "holdings" in requested_sections else None
+        returned_rows = out_holdings if isinstance(out_holdings, list) else raw_holdings
+        returned_holdings = len(out_holdings) if isinstance(out_holdings, list) else total_holdings
+        held_back_count = max(0, total_holdings - returned_holdings)
+        total_weight_pct = round(
+            sum(
+                float(w)
+                for w in (
+                    h.get("weight_pct") or h.get("weightPercentage") or h.get("weight") or h.get("allocation")
+                    for h in returned_rows
+                )
+                if w is not None
+            ),
+            2,
+        )
+
         response = {
             "status": "success",
             "symbol": normalized_symbol,
@@ -442,7 +501,29 @@ def get_etf_holdings(
             "sections": sections_out,
             "source_status": source_status,
             "warnings": warnings,
+            "total_holdings": total_holdings,
+            "returned_holdings": returned_holdings,
+            "total_weight_pct": total_weight_pct,
+            "held_back_count": held_back_count,
         }
+        if held_back_count > 0:
+            next_args: dict[str, Any] = {
+                "symbol": normalized_symbol,
+                "limit": total_holdings,
+            }
+            if include is not None:
+                next_args["include"] = requested_sections
+            response["next_call"] = {
+                "tool": "get_etf_holdings",
+                "arguments": next_args,
+            }
+        elif (total_holdings == 0 and "holdings" in requested_sections) or all(
+            not section_data for section_data in raw_sections.values()
+        ):
+            response["next_call"] = {
+                "tool": "fmp_search",
+                "arguments": {"query": normalized_symbol},
+            }
         if output_mode == "file":
             response["output"] = "file"
         if invalid_sections:

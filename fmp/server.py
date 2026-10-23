@@ -145,7 +145,7 @@ def parse_json_list(value: Any) -> list | None:
     return parsed
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Registry-admitted provider GETs also expose output=file CSV creation."})
 def fmp_fetch(
     endpoint: str,
     symbol: Optional[str] = None,
@@ -161,6 +161,7 @@ def fmp_fetch(
     quarter: Optional[int] = None,
     type: Optional[str] = None,
     page: Optional[int] = None,
+    symbols: Optional[list[str] | str] = None,
 ) -> dict:
     """
     Fetch data from any registered FMP endpoint.
@@ -169,7 +170,8 @@ def fmp_fetch(
     available endpoints, and fmp_describe to see required parameters.
 
     Args:
-        endpoint: Name of the FMP endpoint. Common endpoints:
+        endpoint: Name of the FMP endpoint (aliases such as "fmp_quote" or
+            "grades_consensus" are resolved). Common endpoints:
             - income_statement: Income statement data. `date` is period-end/as-of date.
             - balance_sheet: Balance sheet data. `date` is period-end/as-of date.
             - cash_flow: Cash flow statement data. `date` is period-end/as-of date.
@@ -187,9 +189,14 @@ def fmp_fetch(
             - price_target: Analyst price targets
             - earnings_transcript: Earnings call transcripts
             - sec_filings: SEC filing metadata
-        symbol: Stock symbol (e.g., "AAPL", "MSFT"). Required for most endpoints.
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>"). Required for most endpoints.
+            A comma-separated string is treated as a batch.
         period: Reporting period for financial statements ("annual" or "quarter").
-        limit: Maximum number of records to return.
+        limit: Maximum number of records to return. When omitted,
+            historical_price_eod/historical_price_adjusted return the latest 252
+            bars (unless from_date/to_date is given) and etf_holdings the top 50
+            holdings by weight; the response reports held_back_* counts and a
+            next_call to fetch the rest.
         columns: Optional columns filter as JSON array or comma-separated string.
         output: Output mode: inline records or CSV file path.
         use_cache: Whether to use cached data (default: True). Set False for fresh data.
@@ -200,6 +207,9 @@ def fmp_fetch(
         quarter: Quarter 1-4 (for earnings_transcript endpoint).
         type: Filing type filter (for sec_filings endpoint, e.g., "10-K", "10-Q").
         page: Page number (for paginated endpoints such as mergers_acquisitions_rss).
+        symbols: Up to 20 symbols (JSON array or comma-separated string) for a
+            batch call. Fetches each symbol and returns results_by_symbol plus one
+            aggregate data array with a symbol on every row.
 
     Returns:
         dict with status, endpoint, params, row_count, columns, and data (list of records).
@@ -207,16 +217,16 @@ def fmp_fetch(
 
     Examples:
         # Get Apple's last 3 annual income statements
-        fmp_fetch(endpoint="income_statement", symbol="AAPL", period="annual", limit=3)
+        fmp_fetch(endpoint="income_statement", symbol="<TICKER>", period="annual", limit=3)
 
         # Get adjusted prices for date range
-        fmp_fetch(endpoint="historical_price_adjusted", symbol="AAPL", from_date="2024-01-01")
+        fmp_fetch(endpoint="historical_price_adjusted", symbol="<TICKER>", from_date="2024-01-01")
 
         # Get historical USD/TWD FX close for guidance bridge work
         fmp_fetch(endpoint="historical_price_eod", symbol="USDTWD", from_date="2025-03-11", to_date="2025-03-11")
 
         # Get Q4 2024 earnings transcript
-        fmp_fetch(endpoint="earnings_transcript", symbol="AAPL", year=2024, quarter=4)
+        fmp_fetch(endpoint="earnings_transcript", symbol="<TICKER>", year=2024, quarter=4)
     """
     # Build kwargs dict with all optional parameters
     kwargs = {}
@@ -236,6 +246,9 @@ def fmp_fetch(
         kwargs["page"] = page
 
     parsed_columns = parse_list(columns)
+    parsed_symbols = parse_list(symbols)
+    if parsed_symbols is not None:
+        kwargs["symbols"] = parsed_symbols
 
     return _fmp_fetch(
         endpoint=endpoint,
@@ -249,7 +262,7 @@ def fmp_fetch(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-search endpoint and returns inline records."})
 def fmp_search(
     query: str,
     limit: int = 10,
@@ -278,7 +291,7 @@ def fmp_search(
     return _fmp_search(query=query, limit=limit, exchange=exchange)
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads stock and benchmark historical prices and computes inline relative-return windows."})
 def get_price_performance_windows(
     symbol: str,
     benchmark_symbol: str = "SPY",
@@ -328,8 +341,12 @@ def get_price_performance_windows(
     )
 
 
-@mcp.tool()
-def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> dict:
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-profile endpoint and returns inline profile data."})
+def fmp_profile(
+    symbol: Optional[str] = None,
+    ticker: Optional[str] = None,
+    symbols: Optional[list[str] | str] = None,
+) -> dict:
     """
     Get detailed company profile information as a current FMP /profile snapshot.
 
@@ -342,9 +359,11 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
     `date` field on each row.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT", "GOOGL").
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>", "<TICKER_C>").
         ticker: Alias for symbol, accepted for consistency with other
             ticker-keyed tools.
+        symbols: Up to 20 symbols (JSON array or comma-separated string) for a
+            batch call. Returns results_by_symbol plus an aggregate profiles list.
 
     Returns:
         dict with status, symbol, and profile containing:
@@ -356,14 +375,20 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
         - ipoDate, address, city, state, country
 
     Examples:
-        fmp_profile(symbol="AAPL")
-        fmp_profile(ticker="MSFT")
+        fmp_profile(symbol="<TICKER>")
+        fmp_profile(ticker="<TICKER>")
     """
+    parsed_symbols = parse_list(symbols)
+    if parsed_symbols is not None:
+        return _fmp_profile(symbol=symbol, ticker=ticker, symbols=parsed_symbols)
     return _fmp_profile(symbol=symbol, ticker=ticker)
 
 
-@mcp.tool()
-def fmp_market_cap_check(symbol: str) -> dict:
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads profile and annual key metrics and computes inline market-cap differences."})
+def fmp_market_cap_check(
+    symbol: Optional[str] = None,
+    symbols: Optional[list[str] | str] = None,
+) -> dict:
     """
     Compare current profile market cap against latest annual key_metrics market cap.
 
@@ -373,7 +398,9 @@ def fmp_market_cap_check(symbol: str) -> dict:
     period-end date.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT", "GOOGL").
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>", "<TICKER_C>").
+        symbols: Up to 20 symbols (JSON array or comma-separated string) for a
+            batch call. Returns results_by_symbol plus an aggregate results list.
 
     Returns:
         dict with status, symbol, profile_mktcap, latest_annual_mktcap,
@@ -381,13 +408,16 @@ def fmp_market_cap_check(symbol: str) -> dict:
         with error_type and message.
 
     Examples:
-        fmp_market_cap_check(symbol="AAPL")
-        fmp_market_cap_check(symbol="PCTY")
+        fmp_market_cap_check(symbol="<TICKER>")
+        fmp_market_cap_check(symbol="<TICKER>")
     """
+    parsed_symbols = parse_list(symbols)
+    if parsed_symbols is not None:
+        return _fmp_market_cap_check(symbol=symbol, symbols=parsed_symbols)
     return _fmp_market_cap_check(symbol=symbol)
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Enumerates in-process endpoint registry metadata without provider dispatch."})
 def fmp_list_endpoints(category: Optional[str] = None) -> dict:
     """
     List available FMP data endpoints.
@@ -417,7 +447,7 @@ def fmp_list_endpoints(category: Optional[str] = None) -> dict:
     return _fmp_list_endpoints(category=category)
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Returns local registered-endpoint documentation without provider dispatch."})
 def fmp_describe(endpoint: str) -> dict:
     """
     Get detailed documentation for an FMP endpoint.
@@ -442,7 +472,7 @@ def fmp_describe(endpoint: str) -> dict:
     return _fmp_describe(endpoint=endpoint)
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company screener and normalizes inline results."})
 def screen_stocks(
     sector: Optional[str] = None,
     industry: Optional[str] = None,
@@ -524,7 +554,7 @@ def screen_stocks(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted latest-estimate and revision endpoints; does not collect snapshots."})
 def get_estimate_revisions(
     ticker: str,
     fiscal_date: Optional[str] = None,
@@ -538,7 +568,7 @@ def get_estimate_revisions(
     available upcoming fiscal period for the ticker.
 
     Args:
-        ticker: Ticker symbol (e.g., "AAPL", "MSFT").
+        ticker: Ticker symbol (e.g., "<TICKER_A>", "<TICKER_B>").
         fiscal_date: Fiscal period date (YYYY-MM-DD). Optional.
         period: Estimate horizon:
             - "quarter": Quarterly estimates (default)
@@ -559,7 +589,7 @@ def get_estimate_revisions(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted revision summaries and filters and ranks inline estimate deltas."})
 def screen_estimate_revisions(
     tickers: Optional[str] = None,
     days: int = 30,
@@ -580,7 +610,7 @@ def screen_estimate_revisions(
 
     Args:
         tickers: Optional tickers as JSON array or comma-separated string.
-            Example: '["AAPL","MSFT"]' or "AAPL,MSFT".
+            Example: '["<TICKER_A>","<TICKER_B>"]' or "<TICKER_A>,<TICKER_B>".
         days: Lookback window for baseline comparison (default: 30).
         direction: Filter direction:
             - "up": Positive estimate revisions only
@@ -617,7 +647,7 @@ def screen_estimate_revisions(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Economic indicator and calendar reads also expose output=file CSV creation."})
 def get_economic_data(
     mode: Literal["indicator", "calendar"] = "indicator",
     indicator_name: Optional[str] = None,
@@ -680,7 +710,7 @@ def get_economic_data(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes sector and industry performance, valuation, and optional company reads inline."})
 def get_sector_overview(
     date: Optional[str] = None,
     sector: Optional[str] = None,
@@ -701,8 +731,8 @@ def get_sector_overview(
         sector: Filter to one sector or industry (e.g., "Technology", "Energy",
             "Healthcare"). If not provided, returns all sectors/industries.
         symbols: Optional symbols as JSON array or comma-separated string for
-            per-stock P/E comparison mode. Example: '["AAPL","MSFT","NVDA"]'
-            or "AAPL,MSFT,NVDA". Cannot be combined with `sector`.
+            per-stock P/E comparison mode. Example: '["<TICKER_A>","<TICKER_B>","<TICKER_C>"]'
+            or "<TICKER_A>,<TICKER_B>,<TICKER_C>". Cannot be combined with `sector`.
         level: Granularity level:
             - "sector": GICS sector level (default, ~11 sectors)
             - "industry": More granular industry level
@@ -720,8 +750,8 @@ def get_sector_overview(
         "Which sectors are cheapest?" -> get_sector_overview()
         "Industry-level breakdown" -> get_sector_overview(level="industry")
         "Energy sector performance" -> get_sector_overview(sector="Energy")
-        "Compare AAPL and MSFT vs sector P/E" -> get_sector_overview(symbols="AAPL,MSFT")
-        "Compare at industry level" -> get_sector_overview(symbols="AAPL,XOM", level="industry")
+        "Compare <TICKER_A> and <TICKER_B> vs sector P/E" -> get_sector_overview(symbols="<TICKER_A>,<TICKER_B>")
+        "Compare at industry level" -> get_sector_overview(symbols="<TICKER_A>,<TICKER_B>", level="industry")
     """
     parsed_symbols = parse_list(symbols)
     return _get_sector_overview(
@@ -734,7 +764,7 @@ def get_sector_overview(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes index history, sectors, movers, and event reads into inline market context."})
 def get_market_context(
     include: Optional[str] = None,
     format: Literal["full", "summary"] = "summary",
@@ -779,7 +809,7 @@ def get_market_context(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads institutional holders and position summaries and returns inline ownership analytics."})
 def get_institutional_ownership(
     symbol: str,
     year: Optional[int] = None,
@@ -795,7 +825,7 @@ def get_institutional_ownership(
     metrics to show which institutions are accumulating or reducing positions.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT").
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>").
         year: Optional filing year filter.
         quarter: Optional filing quarter filter (1-4).
         limit: Max holder rows to return in summary mode (default: 20).
@@ -817,7 +847,7 @@ def get_institutional_ownership(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads insider transactions and statistics and computes inline trade-flow summaries."})
 def get_insider_trades(
     symbol: str,
     limit: int = 20,
@@ -830,7 +860,7 @@ def get_insider_trades(
     Fetches recent insider transactions and aggregate insider trading stats.
 
     Args:
-        symbol: Stock symbol (required, e.g., "AAPL").
+        symbol: Stock symbol (required, e.g., "<TICKER>").
         limit: Max trade rows to return in summary mode (default: 20).
         format: Output format:
             - "summary": Normalized recent trades and key stats
@@ -848,25 +878,31 @@ def get_insider_trades(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "ETF holdings reads also expose full-holdings output=file CSV creation."})
 def get_etf_holdings(
-    symbol: str,
-    include: Optional[str] = None,
-    limit: int = 25,
+    symbol: Optional[str] = None,
+    include: Optional[list[str] | str] = None,
+    limit: int = 50,
     format: Literal["full", "summary"] = "summary",
     output: Literal["inline", "file"] = "inline",
     use_cache: bool = True,
+    symbols: Optional[list[str] | str] = None,
 ) -> dict:
     """
     Get ETF/fund composition across holdings, sector/country weights, and metadata.
 
     Args:
         symbol: ETF symbol (e.g., "SPY", "QQQ", "VTI").
+        symbols: Up to 20 ETF symbols (JSON array or comma-separated string) for a
+            batch call. Returns results_by_symbol plus an aggregate results list.
         include: Optional section subset as JSON array or comma-separated string.
             Valid sections:
             "holdings", "sectors", "countries", "info", "exposure", "disclosure".
             Default: all sections.
-        limit: Max rows in summary mode for holdings/exposure/disclosure (default: 25).
+        limit: Max rows in summary mode for holdings/exposure/disclosure
+            (default: 50, top holdings by weight). Responses report
+            total_holdings, returned_holdings, total_weight_pct, held_back_count
+            and a next_call to fetch the rest.
         format: Output format:
             - "summary": Normalized section outputs
             - "full": Raw endpoint payloads
@@ -877,6 +913,10 @@ def get_etf_holdings(
         ETF holdings/allocation data with status field ("success" or "error").
     """
     parsed_include = parse_list(include)
+    parsed_symbols = parse_list(symbols)
+    extra: dict[str, Any] = {}
+    if parsed_symbols is not None:
+        extra["symbols"] = parsed_symbols
     return _get_etf_holdings(
         symbol=symbol,
         include=parsed_include,
@@ -884,10 +924,11 @@ def get_etf_holdings(
         format=format,
         output=output,
         use_cache=use_cache,
+        **extra,
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered stock, general, or press news and filters inline articles."})
 def get_news(
     symbols: Optional[str] = None,
     mode: Literal["stock", "general", "press"] = "stock",
@@ -906,7 +947,7 @@ def get_news(
     Note: For portfolio-aware auto-fill, use get_portfolio_news on portfolio-reads-mcp.
 
     Args:
-        symbols: Comma-separated tickers (e.g., "AAPL,MSFT"). Required for
+        symbols: Comma-separated tickers (e.g., "<TICKER_A>,<TICKER_B>"). Required for
             "stock" and "press" modes.
         mode: News source:
             - "stock": Per-symbol news articles (default)
@@ -929,11 +970,11 @@ def get_news(
         News data with status field ("success" or "error").
 
     Examples:
-        "What's the news on AAPL?" -> get_news(symbols="AAPL")
+        "What's the news on <TICKER>?" -> get_news(symbols="<TICKER>")
         "Latest market news" -> get_news(mode="general")
-        "TSLA press releases" -> get_news(symbols="TSLA", mode="press")
-        "News for AAPL and MSFT" -> get_news(symbols="AAPL,MSFT")
-        "Official AAPL news only" -> get_news(symbols="AAPL", quality="wire")
+        "<TICKER> press releases" -> get_news(symbols="<TICKER>", mode="press")
+        "News for <TICKER_A> and <TICKER_B>" -> get_news(symbols="<TICKER_A>,<TICKER_B>")
+        "Official <TICKER> news only" -> get_news(symbols="<TICKER>", quality="wire")
     """
     return _get_news(
         symbols=symbols,
@@ -947,7 +988,7 @@ def get_news(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered corporate calendars and summarizes inline events over date windows."})
 def get_events_calendar(
     event_type: Literal["earnings", "dividends", "splits", "ipos", "all"] = "earnings",
     from_date: Optional[str] = None,
@@ -975,7 +1016,7 @@ def get_events_calendar(
         to_date: End date in YYYY-MM-DD format (default: today + 30 days).
             Requests may span more than 90 days; the tool splits them internally
             because FMP calendar endpoints accept max 90-day windows per call.
-        symbols: Comma-separated tickers to filter results (e.g., "AAPL,MSFT").
+        symbols: Comma-separated tickers to filter results (e.g., "<TICKER_A>,<TICKER_B>").
         limit: Maximum number of events to return (max: 500).
             If omitted, defaults to 20 for unfiltered event_type="all",
             otherwise 50. Applied after symbol filtering and date sorting.
@@ -988,7 +1029,7 @@ def get_events_calendar(
 
     Examples:
         "Upcoming earnings?" -> get_events_calendar()
-        "Dividend calendar for AAPL" -> get_events_calendar(event_type="dividends", symbols="AAPL")
+        "Dividend calendar for <TICKER>" -> get_events_calendar(event_type="dividends", symbols="<TICKER>")
         "All events this month" -> get_events_calendar(event_type="all")
         "Upcoming IPOs" -> get_events_calendar(event_type="ipos")
     """
@@ -1002,7 +1043,7 @@ def get_events_calendar(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Risk-bound automatic peer discovery can invoke a model and persist global peer-reference rows."})
 def compare_peers(
     symbol: str,
     peers: Optional[str] = None,
@@ -1023,8 +1064,8 @@ def compare_peers(
     capital-allocation comps over no-dividend growth operating peers.
 
     Args:
-        symbol: Stock symbol to compare (e.g., "AAPL", "MSFT").
-        peers: Optional comma-separated peer tickers (e.g., "MSFT,GOOGL,META").
+        symbol: Stock symbol to compare (e.g., "<TICKER_A>", "<TICKER_B>").
+        peers: Optional comma-separated peer tickers (e.g., "<TICKER_A>,<TICKER_B>,<TICKER_C>").
             If not provided, peers are auto-discovered via FMP.
         limit: Maximum number of peers to include (default: 5, max: 10).
         format: Output format:
@@ -1043,9 +1084,9 @@ def compare_peers(
         Peer comparison data with status field ("success" or "error").
 
     Examples:
-        "Compare AAPL to its peers" -> compare_peers(symbol="AAPL")
-        "How does MSFT stack up against peers?" -> compare_peers(symbol="MSFT")
-        "Compare NVDA against AMD and INTC" -> compare_peers(symbol="NVDA", peers="AMD,INTC")
+        "Compare <TICKER> to its peers" -> compare_peers(symbol="<TICKER>")
+        "How does <TICKER> stack up against peers?" -> compare_peers(symbol="<TICKER>")
+        "Compare <TICKER_A> against <TICKER_B> and <TICKER_C>" -> compare_peers(symbol="<TICKER_A>", peers="<TICKER_B>,<TICKER_C>")
         "Rank KO payout ratio vs mature comps" -> compare_peers(symbol="KO", peer_context="capital_allocation")
         "Show me GOOGL's peer group ratios" -> compare_peers(symbol="GOOGL", format="full")
     """
@@ -1060,11 +1101,12 @@ def compare_peers(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes profile, quote, financial, valuation, and history reads; nested technical output is summary-only."})
 def get_stock_fundamentals(
-    symbol: str,
+    symbol: Optional[str] = None,
     include: Optional[str] = None,
     format: Literal["full", "summary"] = "summary",
+    symbols: Optional[list[str] | str] = None,
 ) -> dict:
     """
     Get enriched stock lookup data for a single ticker.
@@ -1075,7 +1117,9 @@ def get_stock_fundamentals(
     data.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT", "NVDA").
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>", "<TICKER_C>").
+        symbols: Up to 20 symbols (JSON array or comma-separated string) for a
+            batch call. Returns results_by_symbol plus an aggregate results list.
         include: Optional section subset as JSON array or comma-separated string.
             Valid sections:
             - "profile": Company name, sector, industry, exchange
@@ -1098,19 +1142,24 @@ def get_stock_fundamentals(
         warnings for any partial failures.
 
     Examples:
-        "Fundamentals for AAPL" -> get_stock_fundamentals(symbol="AAPL")
-        "Valuation and quality for NVDA" -> get_stock_fundamentals(symbol="NVDA", include="valuation,quality")
-        "Full stock lookup for MSFT" -> get_stock_fundamentals(symbol="MSFT", format="full")
+        "Fundamentals for <TICKER>" -> get_stock_fundamentals(symbol="<TICKER>")
+        "Valuation and quality for <TICKER>" -> get_stock_fundamentals(symbol="<TICKER>", include="valuation,quality")
+        "Full stock lookup for <TICKER>" -> get_stock_fundamentals(symbol="<TICKER>", format="full")
     """
     parsed_include = parse_list(include)
+    parsed_symbols = parse_list(symbols)
+    extra: dict[str, Any] = {}
+    if parsed_symbols is not None:
+        extra["symbols"] = parsed_symbols
     return _get_stock_fundamentals(
         symbol=symbol,
         include=parsed_include,
         format=format,
+        **extra,
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Indicator reads and signal computation also expose full output=file CSV creation."})
 def get_technical_analysis(
     symbol: str,
     timeframe: Literal["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"] = "1day",
@@ -1129,7 +1178,7 @@ def get_technical_analysis(
     with an overall buy/sell signal.
 
     Args:
-        symbol: Stock or ETF symbol to analyze (e.g., "AAPL", "SPY").
+        symbol: Stock or ETF symbol to analyze (e.g., "<TICKER>", "SPY").
         timeframe: Candle timeframe for analysis:
             - "1day": Daily (default, most common)
             - "1hour", "4hour": Intraday swing
@@ -1151,11 +1200,11 @@ def get_technical_analysis(
         Technical analysis data with status field ("success" or "error").
 
     Examples:
-        "Technical analysis for AAPL" -> get_technical_analysis(symbol="AAPL")
-        "Is TSLA overbought?" -> get_technical_analysis(symbol="TSLA")
-        "Show me MACD for NVDA" -> get_technical_analysis(symbol="NVDA", indicators="macd")
+        "Technical analysis for <TICKER>" -> get_technical_analysis(symbol="<TICKER>")
+        "Is <TICKER> overbought?" -> get_technical_analysis(symbol="<TICKER>")
+        "Show me MACD for <TICKER>" -> get_technical_analysis(symbol="<TICKER>", indicators="macd")
         "Hourly technicals for SPY" -> get_technical_analysis(symbol="SPY", timeframe="1hour")
-        "Full technical data for MSFT" -> get_technical_analysis(symbol="MSFT", format="full")
+        "Full technical data for <TICKER>" -> get_technical_analysis(symbol="<TICKER>", format="full")
     """
     parsed_indicators = parse_list(indicators)
     return _get_technical_analysis(
@@ -1170,7 +1219,7 @@ def get_technical_analysis(
     )
 
 
-@mcp.tool()
+@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "File output writes transcript markdown and can ingest canonical corpus documents and indexed sections."})
 def get_earnings_transcript(
     symbol: str,
     year: int,
@@ -1206,7 +1255,7 @@ def get_earnings_transcript(
     Add at least one filter to get full content with max_words control.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT", "NVDA").
+        symbol: Stock symbol (e.g., "<TICKER_A>", "<TICKER_B>", "<TICKER_C>").
         year: Fiscal year of the earnings call (e.g., 2024).
         quarter: Quarter 1-4.
         section: Which section to return:
@@ -1241,28 +1290,28 @@ def get_earnings_transcript(
 
     Examples:
         # Step 1: Scout the transcript structure (default — summary mode)
-        get_earnings_transcript(symbol="AAPL", year=2024, quarter=4)
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=4)
 
         # Step 2: Drill into the CEO's prepared remarks
-        get_earnings_transcript(symbol="AAPL", year=2024, quarter=4,
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=4,
                                 section="prepared_remarks", filter_role="CEO",
                                 format="full")
 
         # Read the full Q&A session (truncated to 3000 words per field)
-        get_earnings_transcript(symbol="AAPL", year=2024, quarter=4,
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=4,
                                 section="qa", format="full")
 
         # Find what the CFO said everywhere
-        get_earnings_transcript(symbol="NVDA", year=2024, quarter=3,
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=3,
                                 filter_role="CFO", format="full")
 
         # Find a specific analyst's exchange
-        get_earnings_transcript(symbol="MSFT", year=2024, quarter=4,
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=4,
                                 section="qa", filter_speaker="Nadella",
                                 format="full")
 
         # Get full text without truncation (caution: may be very large)
-        get_earnings_transcript(symbol="AAPL", year=2024, quarter=4,
+        get_earnings_transcript(symbol="<TICKER>", year=2024, quarter=4,
                                 section="prepared_remarks", filter_role="CEO",
                                 format="full", max_words=None)
     """
@@ -1279,40 +1328,13 @@ def get_earnings_transcript(
     )
 
 
-def _kill_previous_instance():
-    """Kill any previous FMP MCP server instance spawned by the same parent session."""
-    import os
-    import signal
-    import tempfile
-    from pathlib import Path
-    server_dir = Path(tempfile.gettempdir()) / "fmp-mcp"
-    server_dir.mkdir(exist_ok=True)
-    ppid = os.getppid()
-    pid_file = server_dir / f".fmp_mcp_server_{ppid}.pid"
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            if old_pid != os.getpid():
-                os.kill(old_pid, signal.SIGTERM)
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-    pid_file.write_text(str(os.getpid()))
-    # Clean up stale PID files from dead sessions
-    for stale in server_dir.glob(".fmp_mcp_server_*.pid"):
-        if stale == pid_file:
-            continue
-        try:
-            session_pid = int(stale.stem.split("_")[-1])
-            os.kill(session_pid, 0)  # check if parent session is alive
-        except (ValueError, ProcessLookupError):
-            stale.unlink(missing_ok=True)
-        except PermissionError:
-            pass  # process exists but owned by another user
-
-
 def run():
-    """Serve using the caller's already-configured FMP runtime policy."""
-    _kill_previous_instance()
+    """Serve using the caller's already-configured FMP runtime policy.
+
+    The MCP client owns this process's lifetime: it holds stdin and closes it
+    (or kills the process group it started) when it is done. Several clients
+    in one parent each hold their own server, so nothing here ends another.
+    """
     mcp.run()
 
 

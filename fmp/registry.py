@@ -11,6 +11,7 @@ Agent orientation:
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Mapping
 import warnings
 from dataclasses import dataclass, field
@@ -36,6 +37,32 @@ PARAM_ALIASES: dict[str, str] = {
     "start_date": "from",
     "end_date": "to",
 }
+
+# Reporting-period aliases (user-friendly -> API value)
+PERIOD_ALIASES: dict[str, str] = {
+    "quarterly": "quarter",
+    "q": "quarter",
+    "qtr": "quarter",
+    "fy": "annual",
+    "yearly": "annual",
+    "yr": "annual",
+}
+
+# Endpoint-name aliases beyond the generic "fmp_" tool-name prefix strip
+ENDPOINT_ALIASES: dict[str, str] = {
+    "grades_consensus": "analyst_grades",
+    "grades": "analyst_grades",
+    "search_symbol": "search",
+    "price_target_summary": "price_target",
+}
+
+
+def normalize_period(value: Any) -> Any:
+    """Case-fold a period value and apply PERIOD_ALIASES."""
+    if not isinstance(value, str):
+        return value
+    lowered = value.strip().lower()
+    return PERIOD_ALIASES.get(lowered, lowered)
 
 
 @dataclass
@@ -73,6 +100,8 @@ class EndpointParam:
             return str(value)[:10]
         elif self.param_type == ParamType.ENUM:
             str_val = str(value)
+            if self.name == "period" or self.enum_values == ["annual", "quarter"]:
+                str_val = normalize_period(str_val)
             if self.enum_values and str_val not in self.enum_values:
                 raise ValueError(
                     f"Parameter '{self.name}' must be one of {self.enum_values}, got '{str_val}'"
@@ -119,6 +148,7 @@ class FMPEndpoint:
     api_version: str = "stable"  # "stable" or "v3"
     response_path: str | None = None  # Dot-path to extract data (e.g., "historical", "data.items")
     response_transform: ResponseTransform | None = None  # Optional transform function for response shaping
+    handler: Callable[[dict[str, Any]], Any] | None = None  # Optional local handler for data-source endpoints
 
     def __post_init__(self) -> None:
         """Validate endpoint configuration."""
@@ -191,9 +221,39 @@ def register_endpoint(endpoint: FMPEndpoint) -> None:
     _ENDPOINTS[endpoint.name] = endpoint
 
 
+def resolve_endpoint_name(name: str) -> str:
+    """Resolve a canonical name or common tool/endpoint alias to a registered name.
+
+    Unknown names are returned unchanged so callers surface the original name.
+    """
+    if not isinstance(name, str):
+        return name
+    key = name.strip()
+    if key in _ENDPOINTS:
+        return key
+    lowered = key.lower()
+    if lowered in _ENDPOINTS:
+        return lowered
+    if lowered in ENDPOINT_ALIASES:
+        return ENDPOINT_ALIASES[lowered]
+    if lowered.startswith("fmp_"):
+        stripped = lowered[len("fmp_"):]
+        if stripped in _ENDPOINTS:
+            return stripped
+        if stripped in ENDPOINT_ALIASES:
+            return ENDPOINT_ALIASES[stripped]
+    return key
+
+
+def suggest_endpoints(name: str, limit: int = 5) -> list[str]:
+    """Return registered endpoint names/aliases closest to an unknown name."""
+    candidates = list(_ENDPOINTS.keys()) + list(ENDPOINT_ALIASES.keys())
+    return difflib.get_close_matches(str(name or "").strip().lower(), candidates, n=limit)
+
+
 def get_endpoint(name: str) -> FMPEndpoint | None:
-    """Get an endpoint by name."""
-    return _ENDPOINTS.get(name)
+    """Get an endpoint by canonical name or alias."""
+    return _ENDPOINTS.get(resolve_endpoint_name(name))
 
 
 def list_endpoints(category: str | None = None) -> list[FMPEndpoint]:
@@ -260,7 +320,7 @@ register_endpoint(
                 "symbol",
                 ParamType.STRING,
                 required=True,
-                description="Stock or FX pair symbol, e.g. AAPL or USDTWD",
+                description="Stock or FX pair symbol, e.g. <TICKER> or USDTWD",
             ),
             EndpointParam("from", ParamType.DATE, description="Start date (YYYY-MM-DD)"),
             EndpointParam("to", ParamType.DATE, description="End date (YYYY-MM-DD)"),
@@ -986,6 +1046,59 @@ register_endpoint(
         cache_dir="cache/calendar",
         cache_refresh=CacheRefresh.TTL,
         cache_ttl_hours=6,
+    )
+)
+
+def _bond_market_calendar_handler(params: dict[str, Any]) -> list[dict[str, Any]]:
+    from .tools.bond_calendar import get_bond_market_calendar
+
+    from_date = params.get("from")
+    to_date = params.get("to")
+    if not from_date or not to_date:
+        raise ValueError("bond_market_calendar requires 'from' and 'to' date parameters")
+    sessions_only = params.get("sessions_only", True)
+    return get_bond_market_calendar(from_date, to_date, sessions_only=sessions_only)
+
+
+register_endpoint(
+    FMPEndpoint(
+        name="bond_market_calendar",
+        path="/bond-market-calendar",
+        description="SIFMA recommended U.S. fixed income market session calendar and holiday schedule",
+        category="calendar",
+        api_version="stable",
+        params=[
+            EndpointParam("from", ParamType.DATE, description="Start date (YYYY-MM-DD)"),
+            EndpointParam("to", ParamType.DATE, description="End date (YYYY-MM-DD)"),
+            EndpointParam(
+                "sessions_only",
+                ParamType.BOOLEAN,
+                default=True,
+                description="Whether to enumerate only trading sessions (default True)",
+            ),
+        ],
+        handler=_bond_market_calendar_handler,
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="sifma_bond_market_calendar",
+        path="/bond-market-calendar",
+        description="SIFMA recommended U.S. fixed income market session calendar and holiday schedule",
+        category="calendar",
+        api_version="stable",
+        params=[
+            EndpointParam("from", ParamType.DATE, description="Start date (YYYY-MM-DD)"),
+            EndpointParam("to", ParamType.DATE, description="End date (YYYY-MM-DD)"),
+            EndpointParam(
+                "sessions_only",
+                ParamType.BOOLEAN,
+                default=True,
+                description="Whether to enumerate only trading sessions (default True)",
+            ),
+        ],
+        handler=_bond_market_calendar_handler,
     )
 )
 

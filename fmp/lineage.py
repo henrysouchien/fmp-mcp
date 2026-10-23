@@ -1,16 +1,27 @@
-"""Provider-owned lineage for normalized FMP responses."""
+"""Provider-owned lineage for normalized FMP responses.
+
+One fetched response has one descriptor (``build_vendor_response_descriptor``,
+issued by ``FMPClient.fetch_with_lineage``). A tool that answers from several
+responses returns one composite descriptor named for the tool
+(``returns_vendor_lineage``): every response the provider boundary returns while
+the tool runs is recorded into the tool call's ``VendorResponseLog``.
+"""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+import functools
 import hashlib
 import json
 import math
+import threading
 from types import MappingProxyType
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterator, Literal, Mapping, Sequence, TypeVar
 
 import pandas as pd
 
@@ -36,8 +47,19 @@ def _descriptor_from_normalized_response(
     response: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     request = {"endpoint": str(endpoint), "params": _json_value(dict(params))}
-    request_sha256 = _sha256(request)
-    response_sha256 = _sha256(response)
+    return _descriptor(
+        endpoint,
+        request_sha256=_sha256(request),
+        response_sha256=_sha256(response),
+        values=_scalar_values(response, key_prefix=""),
+    )
+
+
+def _scalar_values(
+    response: Sequence[Mapping[str, Any]],
+    *,
+    key_prefix: str,
+) -> list[dict[str, Any]]:
     values: list[dict[str, Any]] = []
     for row_index, record in enumerate(response):
         if not isinstance(record, dict):
@@ -50,7 +72,7 @@ def _descriptor_from_normalized_response(
                 continue
             value_kind, canonical_value = canonical
             entry: dict[str, Any] = {
-                "result_key": f"data[{row_index}].{field}",
+                "result_key": f"{key_prefix}data[{row_index}].{field}",
                 "row_index": row_index,
                 "field": field,
                 "value_kind": value_kind,
@@ -60,6 +82,16 @@ def _descriptor_from_normalized_response(
             if period is not None and field != "date":
                 entry["period"] = period
             values.append(entry)
+    return values
+
+
+def _descriptor(
+    endpoint: str,
+    *,
+    request_sha256: str,
+    response_sha256: str,
+    values: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "issuer": "risk_module",
@@ -69,6 +101,166 @@ def _descriptor_from_normalized_response(
         "response_sha256": response_sha256,
         "values": values,
     }
+
+
+@dataclass(frozen=True, slots=True)
+class VendorResponse:
+    """One provider request and its JSON-normalized response records."""
+
+    endpoint: str
+    params: Mapping[str, Any]
+    records: tuple[dict[str, Any], ...]
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical_json_bytes(
+            {
+                "request": {"endpoint": self.endpoint, "params": self.params},
+                "response": list(self.records),
+            }
+        )
+
+
+def build_composite_vendor_response_descriptor(
+    endpoint: str,
+    responses: Sequence[VendorResponse],
+) -> dict[str, Any]:
+    """Describe every provider response one tool call answered from.
+
+    ``endpoint`` is the tool's name, which is the endpoint Hank issues the
+    tool's excerpt handle under. Responses are identified by content, so the
+    descriptor does not depend on the order concurrent fetches completed in,
+    and a response fetched twice is described once.
+    """
+
+    unique = {response.canonical_bytes(): response for response in responses}
+    ordered = [unique[key] for key in sorted(unique)]
+    request = {
+        "endpoint": str(endpoint),
+        "requests": [
+            {"endpoint": response.endpoint, "params": response.params}
+            for response in ordered
+        ],
+    }
+    values: list[dict[str, Any]] = []
+    for index, response in enumerate(ordered):
+        for entry in _scalar_values(
+            response.records,
+            key_prefix=f"responses[{index}].",
+        ):
+            entry["response_endpoint"] = response.endpoint
+            values.append(entry)
+    return _descriptor(
+        endpoint,
+        request_sha256=_sha256(request),
+        response_sha256=_sha256([list(response.records) for response in ordered]),
+        values=values,
+    )
+
+
+class VendorResponseLog:
+    """Thread-safe record of the provider responses one tool call used.
+
+    A log opened inside another (a tool built on another tool) also records
+    into the enclosing log, so the outer tool's descriptor covers both.
+    """
+
+    def __init__(self, parent: VendorResponseLog | _UnscopedLog) -> None:
+        self._parent = parent
+        self._lock = threading.Lock()
+        self._responses: list[VendorResponse] = []
+
+    def record(self, endpoint: str, params: Mapping[str, Any], response: Any) -> None:
+        self.extend(
+            (
+                VendorResponse(
+                    endpoint=str(endpoint),
+                    params=_json_value(dict(params)),
+                    records=_normalized_response(_response_records(response)),
+                ),
+            )
+        )
+
+    def extend(self, responses: Sequence[VendorResponse]) -> None:
+        with self._lock:
+            self._responses.extend(responses)
+        self._parent.extend(responses)
+
+    @property
+    def responses(self) -> tuple[VendorResponse, ...]:
+        with self._lock:
+            return tuple(self._responses)
+
+    def descriptor(self, endpoint: str) -> dict[str, Any]:
+        return build_composite_vendor_response_descriptor(endpoint, self.responses)
+
+
+class _UnscopedLog:
+    """Responses fetched outside any tool call belong to no tool descriptor."""
+
+    def record(self, endpoint: str, params: Mapping[str, Any], response: Any) -> None:
+        pass
+
+    def extend(self, responses: Sequence[VendorResponse]) -> None:
+        pass
+
+
+_ACTIVE_RESPONSE_LOG: ContextVar[VendorResponseLog | _UnscopedLog] = ContextVar(
+    "fmp_vendor_response_log",
+    default=_UnscopedLog(),
+)
+
+
+def active_vendor_response_log() -> VendorResponseLog | _UnscopedLog:
+    """Return the log provider responses are recorded into in this context.
+
+    Worker threads do not inherit it: submit work through
+    ``contextvars.copy_context().run`` so their fetches are recorded.
+    """
+
+    return _ACTIVE_RESPONSE_LOG.get()
+
+
+def record_vendor_response(
+    endpoint: str,
+    params: Mapping[str, Any],
+    response: Any,
+) -> None:
+    """Record one provider response (DataFrame, record list, or object)."""
+
+    _ACTIVE_RESPONSE_LOG.get().record(endpoint, params, response)
+
+
+@contextmanager
+def vendor_response_log() -> Iterator[VendorResponseLog]:
+    """Open the response log for one tool call."""
+
+    log = VendorResponseLog(_ACTIVE_RESPONSE_LOG.get())
+    token = _ACTIVE_RESPONSE_LOG.set(log)
+    try:
+        yield log
+    finally:
+        _ACTIVE_RESPONSE_LOG.reset(token)
+
+
+_ToolResult = TypeVar("_ToolResult", bound=dict)
+
+
+def returns_vendor_lineage(
+    endpoint: str,
+) -> Callable[[Callable[..., _ToolResult]], Callable[..., _ToolResult]]:
+    """Attach the call's composite ``lineage_descriptor`` to a tool's result."""
+
+    def decorate(fn: Callable[..., _ToolResult]) -> Callable[..., _ToolResult]:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> _ToolResult:
+            with vendor_response_log() as log:
+                result = fn(*args, **kwargs)
+            result["lineage_descriptor"] = log.descriptor(endpoint)
+            return result
+
+        return wrapper
+
+    return decorate
 
 
 def build_vendor_request_sha256(
@@ -220,6 +412,9 @@ def _json_value(value: Any) -> Any:
         return {str(key): _json_value(child) for key, child in sorted(value.items())}
     if isinstance(value, (list, tuple)):
         return [_json_value(child) for child in value]
+    if hasattr(value, "tolist"):
+        # numpy scalars, and list fields the parquet cache reads back as arrays.
+        return _json_value(value.tolist())
     if hasattr(value, "item"):
         return _json_value(value.item())
     raise TypeError(f"unsupported FMP lineage value: {type(value).__name__}")
@@ -289,11 +484,26 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _response_records(response: Any) -> Sequence[Mapping[str, Any]]:
+    if isinstance(response, pd.DataFrame):
+        return dataframe_records(response)
+    if isinstance(response, Mapping):
+        return (response,)
+    return tuple(response)
+
+
 __all__ = [
     "FMPFetchResult",
     "FMPFetchSource",
     "SCHEMA_VERSION",
+    "VendorResponse",
+    "VendorResponseLog",
+    "active_vendor_response_log",
+    "build_composite_vendor_response_descriptor",
     "build_vendor_request_sha256",
     "build_vendor_response_descriptor",
     "dataframe_records",
+    "record_vendor_response",
+    "returns_vendor_lineage",
+    "vendor_response_log",
 ]

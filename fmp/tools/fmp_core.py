@@ -7,9 +7,9 @@ Wraps the existing fmp.client module with structured responses.
 Usage (from Claude):
     "What FMP endpoints are available?" -> fmp_list_endpoints()
     "How do I use the income_statement endpoint?" -> fmp_describe("income_statement")
-    "Get Apple's income statement" -> fmp_fetch("income_statement", symbol="AAPL")
+    "Get company's income statement" -> fmp_fetch("income_statement", symbol="<TICKER>")
     "Search for semiconductor companies" -> fmp_search("semiconductor")
-    "Get Apple's profile" -> fmp_profile("AAPL")
+    "Get company's profile" -> fmp_profile("<TICKER>")
 
 Architecture:
 - All functions return structured dicts with status/data/error fields
@@ -31,7 +31,8 @@ from ..exceptions import (
     FMPRateLimitError,
     FMPValidationError,
 )
-from ..registry import get_categories
+from ..lineage import returns_vendor_lineage
+from ..registry import get_categories, normalize_period, resolve_endpoint_name, suggest_endpoints
 from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
 from .beta_guard import add_beta_warning
 
@@ -123,13 +124,86 @@ def _map_exception_to_error(
     elif isinstance(e, FMPValidationError):
         return _error_response("validation", str(e), endpoint, params)
     elif isinstance(e, FMPEmptyResponseError):
-        return _error_response("empty_data", str(e), endpoint, params)
+        response = _error_response("empty_data", str(e), endpoint, params)
+        empty_symbol = (params or {}).get("symbol") or getattr(e, "symbol", None)
+        if empty_symbol:
+            response["next_call"] = {
+                "tool": "fmp_search",
+                "arguments": {"query": str(empty_symbol)},
+            }
+        return response
     elif isinstance(e, FMPEndpointError):
-        return _error_response("unknown_endpoint", str(e), endpoint, params)
+        response = _error_response("unknown_endpoint", str(e), endpoint, params)
+        response["suggestions"] = suggest_endpoints(
+            endpoint or getattr(e, "endpoint_name", "") or ""
+        )
+        response["next_call"] = {"tool": "fmp_list_endpoints", "arguments": {}}
+        return response
     elif isinstance(e, FMPAPIError):
         return _error_response("api", str(e), endpoint, params)
     else:
         return _error_response("unknown", str(e), endpoint, params)
+
+
+def _expand_symbol_values(value: Any) -> list[str]:
+    """Flatten a symbol / list / comma-separated string into raw symbol strings."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        expanded: list[str] = []
+        for item in value:
+            expanded.extend(_expand_symbol_values(item))
+        return expanded
+    return str(value).split(",")
+
+
+def _resolve_symbols_list(
+    symbol: Optional[str | list[str]] = None,
+    symbols: Optional[str | list[str]] = None,
+    ticker: Optional[str] = None,
+    *,
+    max_symbols: int = 20,
+) -> tuple[list[str], bool]:
+    """Resolve symbol/symbols/ticker inputs into (ordered unique symbols, is_batch)."""
+    is_batch = (
+        symbols is not None
+        or isinstance(symbol, (list, tuple))
+        or (isinstance(symbol, str) and "," in symbol)
+    )
+    symbol_list: list[str] = []
+    seen: set[str] = set()
+    for raw in (
+        *_expand_symbol_values(symbols),
+        *_expand_symbol_values(symbol),
+        *_expand_symbol_values(ticker),
+    ):
+        normalized = raw.strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            symbol_list.append(normalized)
+    if len(symbol_list) > max_symbols:
+        raise FMPValidationError(
+            f"Maximum {max_symbols} symbols allowed per batch call"
+        )
+    return symbol_list, is_batch
+
+
+def _batch_status(results_by_symbol: dict[str, dict]) -> str:
+    """Aggregate per-symbol statuses: success, partial (mixed), or error (all failed)."""
+    failed = sum(1 for r in results_by_symbol.values() if r.get("status") == "error")
+    if failed == 0:
+        return "success"
+    if failed == len(results_by_symbol):
+        return "error"
+    return "partial"
+
+
+_PRICE_HISTORY_ENDPOINTS = ("historical_price_eod", "historical_price_adjusted")
+_ETF_HOLDINGS_ENDPOINTS = ("etf_holdings", "etf_holdings_v3")
+_DEFAULT_PRICE_BARS = 252  # one year of trading days
+_DEFAULT_ETF_HOLDINGS = 50
+_ETF_WEIGHT_COLUMNS = ("weightPercentage", "weight", "allocation")
+_PRICE_RANGE_KWARGS = ("from_date", "from", "to_date", "to")
 
 
 def fmp_fetch(
@@ -140,6 +214,7 @@ def fmp_fetch(
     columns: Optional[list[str]] = None,
     output: Literal["inline", "file"] = "inline",
     use_cache: bool = True,
+    symbols: Optional[list[str] | str] = None,
     **kwargs: Any,
 ) -> dict:
     """
@@ -161,21 +236,33 @@ def fmp_fetch(
     fmp_historical_fx_exact_date / fmp_historical_fx_previous_close when using
     FMP daily close data.
 
+    Bounded defaults: historical_price_eod / historical_price_adjusted return
+    the latest 252 bars and etf_holdings returns the top 50 holdings by weight
+    when no limit (or, for prices, date range) is given. The response reports
+    what was held back and a next_call that fetches the rest.
+
     Args:
         endpoint: Name of the FMP endpoint (e.g., "income_statement", "historical_price_adjusted",
-            "historical_price_eod")
-        symbol: Stock symbol (required for most endpoints)
-        period: Reporting period ("annual" or "quarter") for financial statements
+            "historical_price_eod"). Aliases such as "fmp_quote" or
+            "grades_consensus" are resolved to the canonical endpoint.
+        symbol: Stock symbol (required for most endpoints). A comma-separated
+            string is treated as a batch.
+        period: Reporting period ("annual" or "quarter") for financial statements.
+            Aliases "quarterly"/"q"/"qtr" and "fy"/"yearly"/"yr" are accepted.
         limit: Maximum number of records to return
         columns: Optional list of columns to keep in the response
         output: "inline" (default) or "file" to write results to CSV
         use_cache: Whether to use cached data (default: True)
+        symbols: Up to 20 symbols (list or comma-separated string). Fetches
+            each symbol and returns results_by_symbol plus one aggregate
+            data array with a symbol on every row.
         **kwargs: Additional endpoint-specific parameters (e.g., from_date, to_date)
 
     Returns:
         dict with:
-            - status: "success" or "error"
-            - endpoint: The endpoint name
+            - status: "success" or "error" ("partial" for a batch where only
+              some symbols failed)
+            - endpoint: The canonical endpoint name
             - params: Parameters used
             - row_count: Number of records returned (success only)
             - columns: List of column names (success only)
@@ -184,14 +271,92 @@ def fmp_fetch(
             - source_metadata: Provider and series-basis metadata for raw
               historical_price_eod results, including FX pair direction and
               explicit non-equivalence to official/interbank/guidance rates
+            - total_available_bars, returned_bars, held_back_bars: price
+              history endpoints only
+            - total_holdings, returned_holdings, total_weight_pct,
+              held_back_count: etf_holdings endpoints only
+            - next_call: follow-up tool call when rows were held back or the
+              symbol returned nothing
             - error_type, message: Error details (error only)
 
     Examples:
-        fmp_fetch("income_statement", symbol="AAPL", period="annual", limit=3)
-        fmp_fetch("historical_price_adjusted", symbol="AAPL", from_date="2024-01-01")
+        fmp_fetch("income_statement", symbol="<TICKER>", period="annual", limit=3)
+        fmp_fetch("historical_price_adjusted", symbol="<TICKER>", from_date="2024-01-01")
         fmp_fetch("historical_price_eod", symbol="USDTWD", from_date="2025-03-11", to_date="2025-03-11")
         fmp_fetch("treasury_rates", from_date="2024-01-01", to_date="2024-12-31")
+        fmp_fetch("quote", symbols=["<TICKER_A>", "<TICKER_B>"])
     """
+    canonical_endpoint = resolve_endpoint_name(endpoint)
+    period = normalize_period(period) if period else period
+
+    try:
+        symbol_list, is_batch = _resolve_symbols_list(symbol, symbols)
+    except FMPValidationError as e:
+        return _map_exception_to_error(
+            e, canonical_endpoint, {"symbols": symbols if symbols is not None else symbol}
+        )
+
+    if is_batch and symbol_list:
+        results_by_symbol: dict[str, dict] = {}
+        all_data: list[Any] = []
+        lineage_descriptors: list[dict] = []
+        for sym in symbol_list:
+            res = fmp_fetch(
+                endpoint=canonical_endpoint,
+                symbol=sym,
+                period=period,
+                limit=limit,
+                columns=columns,
+                output="inline",
+                use_cache=use_cache,
+                **kwargs,
+            )
+            results_by_symbol[sym] = res
+            if res.get("status") == "error":
+                continue
+            for record in res.get("data", []):
+                if isinstance(record, dict):
+                    record = {**record}
+                    record.setdefault("symbol", sym)
+                all_data.append(record)
+            descriptor = res.get("lineage_descriptor")
+            if descriptor:
+                lineage_descriptors.append(descriptor)
+
+        status = _batch_status(results_by_symbol)
+        columns_union = list(
+            dict.fromkeys(k for row in all_data if isinstance(row, dict) for k in row)
+        )
+        batch_response: dict[str, Any] = {
+            "status": status,
+            "endpoint": canonical_endpoint,
+            "symbols": symbol_list,
+            "count": len(symbol_list),
+            "row_count": len(all_data),
+            "columns": columns_union,
+            "results_by_symbol": results_by_symbol,
+            "data": all_data,
+            "lineage_descriptor": lineage_descriptors[0] if lineage_descriptors else {},
+            "lineage_descriptors": lineage_descriptors,
+        }
+        if status == "error":
+            batch_response["error_type"] = "batch_failed"
+            batch_response["message"] = (
+                f"All {len(symbol_list)} symbol fetches failed; see results_by_symbol."
+            )
+        if output == "file":
+            endpoint_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", canonical_endpoint).strip("_") or "endpoint"
+            timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+            file_path = FILE_OUTPUT_DIR / f"{endpoint_slug}_batch_{timestamp}.csv"
+            write_csv(all_data, file_path)
+            for res in results_by_symbol.values():
+                res.pop("data", None)
+            del batch_response["data"]
+            batch_response["output"] = "file"
+            batch_response["file_path"] = str(file_path)
+            batch_response["hint"] = "Use Read tool with file_path, or Grep to search columns."
+        return batch_response
+
     # Build params dict, filtering out None values
     params = {}
     if symbol:
@@ -202,25 +367,52 @@ def fmp_fetch(
         params["limit"] = limit
     params.update({k: v for k, v in kwargs.items() if v is not None})
 
-    # Resolve effective limit: explicit > endpoint default
+    is_price_history = canonical_endpoint in _PRICE_HISTORY_ENDPOINTS
+    is_etf_holdings = canonical_endpoint in _ETF_HOLDINGS_ENDPOINTS
+
+    # Resolve effective limit: explicit > bounded default > endpoint default
     effective_limit = limit
     if not effective_limit:
         from ..registry import get_endpoint
-        ep = get_endpoint(endpoint)
+        ep = get_endpoint(canonical_endpoint)
         if ep:
             for p in ep.params:
                 if p.name == "limit" and p.default is not None:
                     effective_limit = p.default
                     break
+    if (
+        is_price_history
+        and limit is None
+        and all(kwargs.get(k) is None for k in _PRICE_RANGE_KWARGS)
+    ):
+        effective_limit = _DEFAULT_PRICE_BARS
+    if is_etf_holdings and limit is None:
+        effective_limit = _DEFAULT_ETF_HOLDINGS
 
     try:
         client = get_client()
         fetch_result = client.fetch_with_lineage(
-            endpoint,
+            canonical_endpoint,
             use_cache=use_cache,
             **params,
         )
         df = fetch_result.dataframe
+        total_rows = len(df)
+
+        if is_etf_holdings:
+            weight_column = next(
+                (c for c in _ETF_WEIGHT_COLUMNS if c in df.columns), None
+            )
+            if weight_column is not None and total_rows > 1:
+                import pandas as pd
+
+                df = df.reset_index(drop=True)
+                order = (
+                    pd.to_numeric(df[weight_column], errors="coerce")
+                    .sort_values(ascending=False, kind="stable")
+                    .index
+                )
+                df = df.loc[order]
 
         # Enforce limit client-side (some APIs ignore the limit param)
         if effective_limit and len(df) > effective_limit:
@@ -243,7 +435,7 @@ def fmp_fetch(
 
         response: dict[str, Any] = {
             "status": "success",
-            "endpoint": endpoint,
+            "endpoint": canonical_endpoint,
             "params": params,
             "validated_params": dict(fetch_result.validated_params),
             "fetch_source": fetch_result.source,
@@ -252,7 +444,7 @@ def fmp_fetch(
             "columns": list(df.columns),
             "lineage_descriptor": dict(fetch_result.lineage_descriptor),
         }
-        source_metadata = _historical_price_source_metadata(endpoint, symbol)
+        source_metadata = _historical_price_source_metadata(canonical_endpoint, symbol)
         if source_metadata is not None:
             response["source_metadata"] = source_metadata
         if columns:
@@ -262,8 +454,53 @@ def fmp_fetch(
         if len(records) > 50:
             response["summary"] = auto_summary(records)
 
+        if is_price_history:
+            held_back_bars = max(0, total_rows - len(records))
+            response["total_available_bars"] = total_rows
+            response["returned_bars"] = len(records)
+            response["held_back_bars"] = held_back_bars
+            if held_back_bars > 0:
+                response["next_call"] = {
+                    "tool": "fmp_fetch",
+                    "arguments": {
+                        "endpoint": canonical_endpoint,
+                        "symbol": symbol,
+                        "limit": total_rows,
+                    },
+                }
+        elif is_etf_holdings:
+            held_back_count = max(0, total_rows - len(records))
+            response["total_holdings"] = total_rows
+            response["returned_holdings"] = len(records)
+            response["total_weight_pct"] = round(
+                sum(
+                    float(w)
+                    for w in (
+                        r.get("weightPercentage") or r.get("weight") or r.get("allocation")
+                        for r in records
+                    )
+                    if w is not None
+                ),
+                2,
+            )
+            response["held_back_count"] = held_back_count
+            if held_back_count > 0:
+                response["next_call"] = {
+                    "tool": "fmp_fetch",
+                    "arguments": {
+                        "endpoint": canonical_endpoint,
+                        "symbol": symbol,
+                        "limit": total_rows,
+                    },
+                }
+        if not records and symbol:
+            response["next_call"] = {
+                "tool": "fmp_search",
+                "arguments": {"query": symbol},
+            }
+
         if output == "file":
-            endpoint_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", endpoint).strip("_") or "endpoint"
+            endpoint_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", canonical_endpoint).strip("_") or "endpoint"
             symbol_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", (symbol or "no_symbol")).strip("_")
             timestamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
             file_path = FILE_OUTPUT_DIR / f"{endpoint_slug}_{symbol_slug}_{timestamp}.csv"
@@ -278,7 +515,7 @@ def fmp_fetch(
         return response
 
     except Exception as e:
-        return _map_exception_to_error(e, endpoint, params)
+        return _map_exception_to_error(e, canonical_endpoint, params)
 
 
 def _price_column(columns: list[str]) -> str | None:
@@ -339,6 +576,7 @@ def _parse_iso_date_param(value: str | None, *, param_name: str) -> tuple[date |
         return None, f"{param_name} must be a valid calendar date."
 
 
+@returns_vendor_lineage("get_price_performance_windows")
 def get_price_performance_windows(
     symbol: str,
     benchmark_symbol: str = "SPY",
@@ -648,7 +886,11 @@ def _resolve_symbol_alias(symbol: Optional[str], ticker: Optional[str]) -> str:
     return resolved
 
 
-def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> dict:
+def fmp_profile(
+    symbol: Optional[str] = None,
+    ticker: Optional[str] = None,
+    symbols: Optional[list[str] | str] = None,
+) -> dict:
     """
     Get detailed company profile as a current FMP /profile snapshot.
 
@@ -659,20 +901,54 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
     `date` field on each row.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT").
+        symbol: Stock symbol (e.g., "<TICKER>").
         ticker: Alias for symbol, accepted for consistency with other tools.
+        symbols: Up to 20 symbols (list or comma-separated string) for a batch
+            call; returns results_by_symbol plus an aggregate profiles array.
 
     Returns:
         dict with:
             - status: "success" or "error"
             - symbol: The requested symbol
             - profile: Company profile data (name, sector, industry, description, etc.)
+            - next_call: fmp_search call to resolve the symbol (empty profile only)
+        Batch calls return status ("success", "partial" or "error"), symbols,
+        count, results_by_symbol, profiles, and lineage_descriptors.
 
     Examples:
-        fmp_profile(symbol="AAPL")
-        fmp_profile(ticker="MSFT")
+        fmp_profile(symbol="<TICKER>")
+        fmp_profile(ticker="<TICKER>")
+        fmp_profile(symbols=["<TICKER_A>", "<TICKER_B>"])
     """
     try:
+        symbol_list, is_batch = _resolve_symbols_list(symbol, symbols, ticker)
+        if is_batch and symbol_list:
+            results_by_symbol: dict[str, dict] = {}
+            profiles: list[dict] = []
+            lineage_descriptors: list[dict] = []
+            for sym in symbol_list:
+                res = fmp_profile(symbol=sym)
+                results_by_symbol[sym] = res
+                if res.get("status") == "error":
+                    continue
+                profile = res.get("profile")
+                if isinstance(profile, dict) and profile:
+                    row = dict(profile)
+                    row.setdefault("symbol", sym)
+                    profiles.append(row)
+                descriptor = res.get("lineage_descriptor")
+                if descriptor:
+                    lineage_descriptors.append(descriptor)
+            return {
+                "status": _batch_status(results_by_symbol),
+                "symbols": symbol_list,
+                "count": len(profiles),
+                "results_by_symbol": results_by_symbol,
+                "profiles": profiles,
+                "lineage_descriptor": lineage_descriptors[0] if lineage_descriptors else {},
+                "lineage_descriptors": lineage_descriptors,
+            }
+
         resolved_symbol = _resolve_symbol_alias(symbol, ticker)
         client = get_client()
         fetch_result = client.fetch_with_lineage(
@@ -684,7 +960,7 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
         # Profile returns a list with single item
         profile = add_beta_warning(records[0]) if records else {}
 
-        return {
+        response = {
             "status": "success",
             "symbol": resolved_symbol,
             "profile": profile,
@@ -693,6 +969,12 @@ def fmp_profile(symbol: Optional[str] = None, ticker: Optional[str] = None) -> d
             "observed_at": fetch_result.observed_at.isoformat(),
             "lineage_descriptor": dict(fetch_result.lineage_descriptor),
         }
+        if not records:
+            response["next_call"] = {
+                "tool": "fmp_search",
+                "arguments": {"query": resolved_symbol},
+            }
+        return response
 
     except Exception as e:
         return _map_exception_to_error(e, "profile", {"symbol": symbol, "ticker": ticker})
@@ -723,7 +1005,10 @@ def _extract_error_context(result: dict, source: str) -> dict:
     )
 
 
-def fmp_market_cap_check(symbol: str) -> dict:
+def fmp_market_cap_check(
+    symbol: Optional[str] = None,
+    symbols: Optional[list[str] | str] = None,
+) -> dict:
     """
     Compare current profile market cap against latest annual key_metrics market cap.
 
@@ -734,7 +1019,9 @@ def fmp_market_cap_check(symbol: str) -> dict:
     `latest_annual_date` for historical period analysis.
 
     Args:
-        symbol: Stock symbol (e.g., "AAPL", "MSFT")
+        symbol: Stock symbol (e.g., "<TICKER>")
+        symbols: Up to 20 symbols (list or comma-separated string) for a batch
+            call; returns results_by_symbol plus an aggregate results array.
 
     Returns:
         dict with status, symbol, profile_mktcap, latest_annual_mktcap,
@@ -742,6 +1029,24 @@ def fmp_market_cap_check(symbol: str) -> dict:
         status="error" with error_type and message.
     """
     try:
+        symbol_list, is_batch = _resolve_symbols_list(symbol, symbols)
+        if is_batch and symbol_list:
+            results_by_symbol: dict[str, dict] = {}
+            results: list[dict] = []
+            for sym in symbol_list:
+                res = fmp_market_cap_check(symbol=sym)
+                results_by_symbol[sym] = res
+                results.append(res)
+            return {
+                "status": _batch_status(results_by_symbol),
+                "symbols": symbol_list,
+                "count": len(results),
+                "results_by_symbol": results_by_symbol,
+                "results": results,
+            }
+
+        if not str(symbol or "").strip():
+            raise FMPValidationError("fmp_market_cap_check requires symbol or symbols")
         profile_result = fmp_profile(symbol=symbol)
         if profile_result.get("status") == "error":
             return _extract_error_context(profile_result, "profile")
@@ -858,42 +1163,44 @@ def fmp_describe(endpoint: str) -> dict:
     before calling fmp_fetch.
 
     Args:
-        endpoint: Name of the endpoint (e.g., "income_statement")
+        endpoint: Name of the endpoint (e.g., "income_statement"). Common
+            aliases such as "fmp_quote" or "grades_consensus" are resolved.
 
     Returns:
         dict with:
             - status: "success" or "error"
-            - endpoint: The endpoint name
+            - endpoint: The canonical endpoint name
             - documentation: Full endpoint details including:
                 - name, path, description, category
                 - fmp_docs_url: Link to official FMP documentation
                 - cache_dir, cache_ttl_hours, cache_enabled
                 - parameters: List of parameter definitions with
                   name, type, required, default, description, enum_values
+            - suggestions, next_call: close endpoint names and the discovery
+              call to run (unknown endpoint only)
 
     Examples:
         fmp_describe("income_statement")
         fmp_describe("historical_price_adjusted")
     """
+    canonical_endpoint = resolve_endpoint_name(endpoint)
     try:
         client = get_client()
-        docs = client.describe(endpoint)
+        docs = client.describe(canonical_endpoint)
 
         if docs is None:
-            return _error_response(
-                "unknown_endpoint",
-                f"Unknown FMP endpoint: '{endpoint}'",
-                endpoint,
+            return _map_exception_to_error(
+                FMPEndpointError(endpoint), canonical_endpoint
             )
 
         return {
             "status": "success",
-            "endpoint": endpoint,
+            "endpoint": canonical_endpoint,
             "documentation": docs,
         }
 
     except Exception as e:
-        return _map_exception_to_error(e, endpoint)
+        return _map_exception_to_error(e, canonical_endpoint)
 
 
 # MCP Tool registration metadata (for reference, not used by FastMCP)

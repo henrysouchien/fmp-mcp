@@ -20,6 +20,7 @@ from fmp.estimates_client import (
     MISSING_API_URL_ERROR as _MISSING_API_URL_ERROR,
     get as _api_get,
 )
+from fmp.lineage import record_vendor_response, returns_vendor_lineage
 
 DEFAULT_MIN_EPS_DELTA_PCT = 0.01
 DEFAULT_MIN_REVENUE_DELTA_PCT = 0.005
@@ -156,6 +157,14 @@ def _annotate_materiality(
     return annotated
 
 
+def _estimates_get(path: str, params: dict[str, Any]) -> list | dict:
+    """Fetch one hosted estimates API response and record it for lineage."""
+    payload = _api_get(path, params)
+    record_vendor_response(path, params, payload)
+    return payload
+
+
+@returns_vendor_lineage("get_estimate_revisions")
 def get_estimate_revisions(
     ticker: str,
     fiscal_date: Optional[str] = None,
@@ -198,7 +207,7 @@ def _get_estimate_revisions_http(
     period: str,
 ) -> dict:
     """Get estimate revisions via hosted HTTP API."""
-    latest = _api_get("/api/estimates/latest", {"ticker": clean_ticker, "period": period})
+    latest = _estimates_get("/api/estimates/latest", {"ticker": clean_ticker, "period": period})
     if not latest:
         return {
             "status": "success",
@@ -222,7 +231,7 @@ def _get_estimate_revisions_http(
             "note": "Unable to determine fiscal_date from latest snapshots.",
         }
 
-    revisions = _api_get(
+    revisions = _estimates_get(
         "/api/estimates/revisions",
         {"ticker": clean_ticker, "fiscal_date": resolved_fiscal, "period": period},
     )
@@ -262,6 +271,7 @@ def _get_estimate_revisions_http(
     }
 
 
+@returns_vendor_lineage("screen_estimate_revisions")
 def screen_estimate_revisions(
     tickers: Optional[list[str] | str] = None,
     days: int = 30,
@@ -361,4 +371,4 @@ def _screen_http(
     params: dict[str, Any] = {"days": days, "period": period}
     if clean_tickers:
         params["tickers"] = ",".join(clean_tickers)
-    return _api_get("/api/estimates/revision-summary", params)
+    return _estimates_get("/api/estimates/revision-summary", params)
