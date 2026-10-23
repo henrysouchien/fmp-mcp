@@ -3,6 +3,12 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.8] — 2026-10-23
+
+### Changed
+- `configure_client()` called without a `budget_guard` now installs `fmp.spend`, so every FMP network call in a host that injects no guard writes one row to the machine-wide API spend ledger (`api_category` `market_data`, provider `fmp`/`fmp_estimates`, endpoint `<provider>:<operation>`, key fingerprint, ticker, HTTP status, bytes, duration; a 429 retry is its own row) and every cache-answered request writes a zero-call `cache_hit` row. A call whose spend ceiling (`freeze_payg`, `market_data_daily_calls_cap`, …) is already met raises `SpendCeilingExceeded` before any request is sent and writes a `budget_blocked` row. A host `budget_guard` (Risk's) still owns metering and nothing from `fmp.spend` runs; a host `event_observer` without a guard receives events alongside the ledger observer.
+- New dependency `hank-model-authority>=1.7.1,<2` (the ledger writer).
+
 ## [0.5.7] — 2026-10-23
 
 ### Added

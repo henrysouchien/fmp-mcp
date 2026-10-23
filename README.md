@@ -82,11 +82,15 @@ network fetch. An unconfigured client refuses dispatch and names the required
 - `fmp.client.configure_client(budget_guard=..., event_observer=...)`.
   The guard accepts `fn`, `args`, `kwargs` plus provider/operation/budget
   metadata. The observer receives `(event, endpoint, **details)`, where event
-  is `success` (`duration_ms`, `status`), `rate_limit`, `error` (`error`), or
-  `plan_limit` (`error`). Explicit `configure_client()` selects the public
-  default: no budget guard, direct requests, and native Python logging for
-  rate limits and errors. The public `fmp-mcp` / `python -m fmp.server`
-  entrypoint selects this policy before serving tools.
+  is `success` (`duration_ms`, `status`), `rate_limit`, `error` (`error`),
+  `plan_limit` (`error`), or `cache_hit` (`params`). Explicit `configure_client()`
+  selects the public default: `fmp.spend` writes one machine-wide API spend-ledger
+  row per network call and a zero-call `cache_hit` row per cache-answered request
+  (`hank-model-authority`), refuses a call whose spend ceiling is already met with
+  `SpendCeilingExceeded`, and rate limits and errors go to native Python logging.
+  A host that passes its own `budget_guard` owns metering and nothing in
+  `fmp.spend` runs. The public `fmp-mcp` / `python -m fmp.server`
+  entrypoint selects the default policy before serving tools.
 - `fmp.tools.peers.configure_peer_tools(metric_resolver=..., peer_discovery=...,
   spot_fx_rate=...)`. Metric resolvers return the existing structural
   `peers`/`source`/`to_dict()` result; discovery returns ticker strings.

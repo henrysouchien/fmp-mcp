@@ -22,9 +22,10 @@ A unified interface for Financial Modeling Prep (FMP) API data access with:
 ## Quick Start
 
 Call `configure_client(...)` once at process startup; the examples below assume
-this setup. `configure_client()` explicitly selects the public no-budget-guard
-policy. Risk applications instead call `fmp_runtime.configure()` to install
-their budget and logging policy. Unconfigured clients refuse network dispatch.
+this setup. `configure_client()` selects the public default policy: every network
+call and cache hit is metered to the machine-wide API spend ledger
+(`fmp.spend`). Risk applications instead call `fmp_runtime.configure()` to install
+their own budget and logging policy. Unconfigured clients refuse network dispatch.
 
 ```python
 from fmp import FMPClient

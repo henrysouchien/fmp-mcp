@@ -60,8 +60,27 @@ _event_observer: Callable | None = None
 
 
 def configure_client(*, budget_guard: Callable | None = None, event_observer: Callable | None = None) -> None:
-    """Enable dispatch with explicit callbacks, or native logging and no budget guard."""
+    """Enable dispatch. Without a ``budget_guard`` the package meters spend itself.
+
+    A host that passes ``budget_guard`` owns metering and budget policy (Risk does). With
+    none, ``fmp.spend`` writes one spend-ledger row per network call and one ``cache_hit``
+    row per cache-answered request, and refuses a call whose spend ceiling is already met;
+    a host ``event_observer`` still receives every event.
+    """
     global _configured, _budget_guard, _event_observer
+    if budget_guard is None:
+        from . import spend
+
+        budget_guard = spend.guard_call
+        if event_observer is None:
+            event_observer = spend.observe
+        else:
+            host_observer = event_observer
+
+            def event_observer(event: str, endpoint: str, **details: Any) -> None:
+                spend.observe(event, endpoint, **details)
+                host_observer(event, endpoint, **details)
+
     _budget_guard = budget_guard
     _event_observer = event_observer
     _configured = True

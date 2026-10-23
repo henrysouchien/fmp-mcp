@@ -21,7 +21,7 @@ Quick Start:
     from fmp import FMPClient
     from fmp.client import configure_client
 
-    configure_client()  # Explicit public policy: no application budget guard
+    configure_client()  # Public default policy: spend-ledger metering, no host guard
     fmp = FMPClient()
 
     # Fetch data
@@ -50,7 +50,7 @@ Available Endpoints:
     - analyst: analyst_estimates, price_target
 """
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"
 
 from .client import FMPClient, fetch, fetch_with_lineage, get_client
 from .definitions import (
