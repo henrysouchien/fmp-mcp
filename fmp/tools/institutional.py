@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal, Optional
 
 from ..client import FMPClient
-from ..exceptions import FMPEmptyResponseError
+from ..exceptions import FMPAPIError, FMPEmptyResponseError
 from ..lineage import returns_vendor_lineage
 
 
@@ -113,7 +113,7 @@ def _safe_fetch_records(
     except FMPEmptyResponseError:
         return {"ok": True, "data": [], "error": None}
     except Exception as e:
-        if fallback_endpoint and "402" in str(e):
+        if fallback_endpoint and isinstance(e, FMPAPIError) and e.status_code == 402:
             try:
                 # v3 endpoints may accept fewer params; filter to symbol only
                 fb_params = {k: v for k, v in params.items() if k == "symbol"}

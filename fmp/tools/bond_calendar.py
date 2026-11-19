@@ -11,7 +11,11 @@ import functools
 import json
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from ..exceptions import FMPDefinitionArtifactError
 
 _ARTIFACT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -20,25 +24,67 @@ _ARTIFACT_PATH = (
 )
 
 
+class _ArtifactModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class _RawArtifact(_ArtifactModel):
+    path: str
+    sha256: str
+    url: str
+
+
+class _Provenance(_ArtifactModel):
+    source_url: str
+    source_archive_url: str
+    raw_artifacts: list[_RawArtifact]
+    publisher: str
+    market: str
+    market_code: str
+    retrieved_at: str
+    years_covered: list[int] = Field(min_length=1)
+    description: str
+
+
+class _Holiday(_ArtifactModel):
+    date: str
+    status: Literal["closed", "early_close"]
+    holiday_name: str
+    early_close_time: str | None
+
+
+class _Schedule(_ArtifactModel):
+    schema_url: str = Field(alias="$schema")
+    data_source: str
+    version: str
+    provenance: _Provenance
+    holidays: list[_Holiday]
+
+
 @functools.lru_cache(maxsize=1)
 def load_sifma_schedule() -> dict[str, Any]:
-    """Load the raw SIFMA schedule artifact with provenance."""
-    if not _ARTIFACT_PATH.exists():
-        raise FileNotFoundError(
-            f"SIFMA holiday schedule artifact missing: {_ARTIFACT_PATH}"
-        )
-    return json.loads(_ARTIFACT_PATH.read_text(encoding="utf-8"))
+    """Parse the SIFMA artifact once before exposing it to cached readers."""
+    try:
+        data = json.loads(_ARTIFACT_PATH.read_text(encoding="utf-8"))
+        _Schedule.model_validate(data)
+    except (OSError, UnicodeError, ValueError):
+        raise FMPDefinitionArtifactError(
+            "Invalid SIFMA holiday schedule artifact"
+        ) from None
+    return data
 
 
 @functools.lru_cache(maxsize=1)
 def _holidays_index() -> dict[str, dict[str, Any]]:
     """Return map of ISO date -> holiday entry."""
     data = load_sifma_schedule()
-    return {entry["date"]: entry for entry in data.get("holidays", [])}
+    return {entry["date"]: entry for entry in data["holidays"]}
+
+
 def covered_years() -> tuple[int, ...]:
     """Return tuple of years covered by the ingested SIFMA schedule."""
     data = load_sifma_schedule()
-    return tuple(data.get("provenance", {}).get("years_covered", []))
+    return tuple(data["provenance"]["years_covered"])
 
 
 def _parse_date(d: date | str) -> date:

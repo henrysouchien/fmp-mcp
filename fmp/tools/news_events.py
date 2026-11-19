@@ -58,6 +58,7 @@ _CALENDAR_ENDPOINTS = {
 }
 
 _MAX_CALENDAR_WINDOW_DAYS = 90
+_FMP_CALENDAR_PAGE_CAP = 4000
 
 
 def _clean_record(record: dict) -> dict:
@@ -120,15 +121,58 @@ def _fetch_calendar(
     to_date: str,
     *,
     use_cache: bool = True,
+    capped_dates: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Fetch a single calendar endpoint, returning list of events."""
-    return _fetch_records(
-        fmp,
-        endpoint_name,
-        from_date=from_date,
-        to_date=to_date,
-        use_cache=use_cache,
-    )
+    """Recover capped pages; report unsplittable days through capped_dates."""
+    pending = [(from_date, to_date)]
+    events = []
+    while pending:
+        window_from, window_to = pending.pop()
+        records = _fetch_records(
+            fmp,
+            endpoint_name,
+            from_date=window_from,
+            to_date=window_to,
+            use_cache=use_cache,
+        )
+        if len(records) < _FMP_CALENDAR_PAGE_CAP:
+            events.extend(records)
+            continue
+        if window_from == window_to:
+            if capped_dates is not None:
+                capped_dates.append(window_from)
+            events.extend(records)
+            continue
+
+        dates = []
+        for record in records:
+            value = record.get("date")
+            if not isinstance(value, str):
+                break
+            try:
+                parsed = datetime.strptime(value[:10], "%Y-%m-%d")
+            except ValueError:
+                break
+            normalized = parsed.strftime("%Y-%m-%d")
+            if normalized != value[:10] or not window_from <= normalized <= window_to:
+                break
+            dates.append(normalized)
+
+        earliest = min(dates) if len(dates) == len(records) else None
+        if earliest is not None and window_from < earliest < window_to:
+            # The earliest returned day may itself be truncated. Replace that
+            # whole day with the prefix fetch, rather than skipping or merging it.
+            events.extend(record for record, day in zip(records, dates) if day > earliest)
+            pending.append((window_from, earliest))
+        else:
+            # No useful boundary (including a whole page on the final day).
+            # Disjoint halves guarantee progress without overlapping event rows.
+            dt_from = datetime.strptime(window_from, "%Y-%m-%d")
+            dt_to = datetime.strptime(window_to, "%Y-%m-%d")
+            midpoint = dt_from + timedelta(days=(dt_to - dt_from).days // 2)
+            pending.append((window_from, midpoint.strftime("%Y-%m-%d")))
+            pending.append(((midpoint + timedelta(days=1)).strftime("%Y-%m-%d"), window_to))
+    return events
 
 
 def _calendar_windows(dt_from: datetime, dt_to: datetime) -> list[tuple[str, str]]:
@@ -314,6 +358,7 @@ def get_events_calendar(
 
         fmp = FMPClient()
         all_events = []
+        capped_dates = []
 
         if event_type == "all":
             for etype, endpoint_name in _CALENDAR_ENDPOINTS.items():
@@ -324,6 +369,7 @@ def get_events_calendar(
                         window_from,
                         window_to,
                         use_cache=use_cache,
+                        capped_dates=capped_dates,
                     )
                     for evt in events:
                         evt["_event_type"] = etype
@@ -337,6 +383,7 @@ def get_events_calendar(
                     window_from,
                     window_to,
                     use_cache=use_cache,
+                    capped_dates=capped_dates,
                 )
                 for evt in events:
                     evt["_event_type"] = event_type
@@ -377,6 +424,14 @@ def get_events_calendar(
         if total_events > limit:
             result["total_available"] = total_events
             result["truncated"] = True
+        if capped_dates:
+            result["provider_window_capped"] = True
+            result["capped_dates"] = sorted(set(capped_dates))
+            result["warnings"] = [
+                "FMP's 4,000-row calendar response cap was reached on a single day. "
+                "Coverage is incomplete for capped_dates; an absent symbol does not "
+                "prove that no event exists."
+            ]
         return result
 
     except Exception as e:

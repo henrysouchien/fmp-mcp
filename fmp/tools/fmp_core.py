@@ -31,6 +31,12 @@ from ..exceptions import (
     FMPRateLimitError,
     FMPValidationError,
 )
+from ..figure_statements import (
+    fmp_row_currency,
+    resolve_statements,
+    statements_table,
+    vendor_row_statements,
+)
 from ..lineage import returns_vendor_lineage
 from ..registry import get_categories, normalize_period, resolve_endpoint_name, suggest_endpoints
 from ._file_output import FILE_OUTPUT_DIR, auto_summary, write_csv
@@ -300,6 +306,7 @@ def fmp_fetch(
         results_by_symbol: dict[str, dict] = {}
         all_data: list[Any] = []
         lineage_descriptors: list[dict] = []
+        batch_by_place: dict[tuple[str | int, ...], dict[str, Any]] = {}
         for sym in symbol_list:
             res = fmp_fetch(
                 endpoint=canonical_endpoint,
@@ -314,11 +321,30 @@ def fmp_fetch(
             results_by_symbol[sym] = res
             if res.get("status") == "error":
                 continue
-            for record in res.get("data", []):
+            sym_offset = len(all_data)
+            sym_rows = res.get("data", [])
+            for record in sym_rows:
                 if isinstance(record, dict):
                     record = {**record}
                     record.setdefault("symbol", sym)
                 all_data.append(record)
+            sym_statements = res.get("statements") or []
+            if sym_statements and sym_rows:
+                not_figs = [
+                    ["data", None, id_field]
+                    for id_field in ("fiscalYear", "calendarYear")
+                    if any(isinstance(r, dict) and id_field in r for r in sym_rows)
+                ]
+                resolved_sym = resolve_statements(
+                    sym_statements,
+                    {"data": sym_rows},
+                    not_figures=not_figs,
+                )
+                for place, stmt in resolved_sym.items():
+                    wire_stmt = stmt.model_dump(mode="json")
+                    batch_by_place[("results_by_symbol", sym, *place)] = wire_stmt
+                    if len(place) == 3 and place[0] == "data" and type(place[1]) is int:
+                        batch_by_place[("data", sym_offset + place[1], place[2])] = wire_stmt
             descriptor = res.get("lineage_descriptor")
             if descriptor:
                 lineage_descriptors.append(descriptor)
@@ -351,10 +377,13 @@ def fmp_fetch(
             write_csv(all_data, file_path)
             for res in results_by_symbol.values():
                 res.pop("data", None)
+                res.pop("statements", None)
             del batch_response["data"]
             batch_response["output"] = "file"
             batch_response["file_path"] = str(file_path)
             batch_response["hint"] = "Use Read tool with file_path, or Grep to search columns."
+        elif status != "error" and batch_by_place:
+            batch_response["statements"] = statements_table(batch_by_place)
         return batch_response
 
     # Build params dict, filtering out None values
@@ -418,6 +447,8 @@ def fmp_fetch(
         if effective_limit and len(df) > effective_limit:
             df = df.head(effective_limit)
 
+        full_records = df.to_dict(orient="records")
+
         filtered_columns: list[str] = []
         warnings: list[str] = []
         if columns:
@@ -444,6 +475,8 @@ def fmp_fetch(
             "columns": list(df.columns),
             "lineage_descriptor": dict(fetch_result.lineage_descriptor),
         }
+        if any(isinstance(row, dict) and "reportedCurrency" in row for row in full_records):
+            response["row_currencies"] = [fmp_row_currency(row) for row in full_records]
         source_metadata = _historical_price_source_metadata(canonical_endpoint, symbol)
         if source_metadata is not None:
             response["source_metadata"] = source_metadata
@@ -512,6 +545,17 @@ def fmp_fetch(
 
         response["output"] = "inline"
         response["data"] = records
+        stmts = statements_table(
+            vendor_row_statements(
+                canonical_endpoint,
+                fetch_result.validated_params,
+                full_records,
+                observed_at=fetch_result.observed_at,
+                fields=filtered_columns if filtered_columns else None,
+            )
+        )
+        if stmts:
+            response["statements"] = stmts
         return response
 
     except Exception as e:

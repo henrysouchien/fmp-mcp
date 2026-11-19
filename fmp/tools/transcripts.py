@@ -27,6 +27,7 @@ import hashlib
 import html
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -39,6 +40,15 @@ from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError
 from ..file_residency import is_dataless_file
 from ._file_output import _cache_base, atomic_write_text
+
+logger = logging.getLogger(__name__)
+
+# What a caller is told when saving transcripts to the research library is switched on but where it
+# lives is not set. Only whoever runs the installation can set it; the settings are logged.
+CORPUS_NOT_SET_UP = (
+    "The transcript was not saved: saving transcripts to the research library is switched on "
+    "but not set up on this installation. It is set up by whoever runs this installation."
+)
 
 # Parser version for cache invalidation. Bump when parsing logic changes.
 # Included in cache filename so old caches are naturally bypassed.
@@ -1000,9 +1010,10 @@ def _ingest_transcript_result(result: dict) -> Path:
     corpus_root_raw = os.getenv("CORPUS_ROOT")
     db_path_raw = os.getenv("CORPUS_DB_PATH")
     if not corpus_root_raw or not db_path_raw:
-        raise RuntimeError(
-            "CORPUS_ROOT and CORPUS_DB_PATH are required when CORPUS_INGEST_ENABLED=true"
+        logger.warning(
+            "Transcript not saved: CORPUS_INGEST_ENABLED=true but CORPUS_ROOT or CORPUS_DB_PATH is not set."
         )
+        raise RuntimeError(CORPUS_NOT_SET_UP)
 
     # Lazy import: `research_corpus` is monorepo-internal, not shipped to fmp-mcp dist.
     from research_corpus.db import open_corpus_db

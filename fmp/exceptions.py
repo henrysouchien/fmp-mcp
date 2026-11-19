@@ -21,11 +21,15 @@ class FMPAPIError(FMPError):
         message: str,
         status_code: int | None = None,
         endpoint: str | None = None,
+        *,
+        content_type: str | None = None,
+        body_excerpt: str | None = None,
     ):
         super().__init__(message)
         self.status_code = status_code
         self.endpoint = endpoint
-
+        self.content_type = content_type
+        self.body_excerpt = body_excerpt
 
 class FMPRateLimitError(FMPAPIError):
     """Raised when FMP rate limit is exceeded (HTTP 429)."""
@@ -36,6 +40,22 @@ class FMPRateLimitError(FMPAPIError):
             status_code=429,
             endpoint=endpoint,
         )
+
+
+class FMPTimeoutError(FMPAPIError):
+    """The request to FMP timed out: no answer arrived. Waiting can clear it.
+
+    A typed fact, not a message: a caller that must tell an outage from a refusal reads this class. The
+    transport's own error is not chained (its text can carry the request's URL and key), so the type is
+    the only carrier.
+    """
+
+
+class FMPConnectionError(FMPAPIError):
+    """The request to FMP could not be made (the connection failed or was refused). Waiting can clear it.
+
+    Typed for the same reason as ``FMPTimeoutError``; the transport's error is not chained.
+    """
 
 
 class FMPAuthenticationError(FMPAPIError):

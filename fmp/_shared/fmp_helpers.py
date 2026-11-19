@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from typing import Any, Optional
 
+from fmp.exceptions import FMPEmptyResponseError
 from value_semantics_core import (
     ForwardEpsEstimate,
     ForwardPeAvailable,
@@ -234,13 +235,28 @@ def fetch_forward_pe(
     fmp_client: Any, ticker: str, current_price: Any
 ) -> dict[str, Any]:
     """Fetch analyst data and compute forward P/E."""
-    last_reported_fiscal_date = _get_last_reported_fiscal_date(fmp_client, ticker)
-    estimates_df = fmp_client.fetch(
-        "analyst_estimates",
-        symbol=ticker,
-        period="annual",
-        limit=4,
-    )
+    try:
+        last_reported_fiscal_date = _get_last_reported_fiscal_date(fmp_client, ticker)
+    except FMPEmptyResponseError:
+        # Issuers with no income statement (ETFs, funds) have no fiscal anchor,
+        # so no forward basis exists: report the explicit unavailable result.
+        return compute_forward_pe(current_price, [])
+    try:
+        estimates_df = fmp_client.fetch(
+            "analyst_estimates",
+            symbol=ticker,
+            period="annual",
+            limit=4,
+        )
+    except FMPEmptyResponseError:
+        # Issuers with reported statements but no analyst consensus (closed-end
+        # funds such as DSU, uncovered issuers) have no forward estimates:
+        # report the explicit unavailable result.
+        return compute_forward_pe(
+            current_price,
+            [],
+            last_reported_fiscal_date=last_reported_fiscal_date,
+        )
     if estimates_df is None:
         estimate_records: list[dict[str, Any]] = []
     elif hasattr(estimates_df, "empty"):

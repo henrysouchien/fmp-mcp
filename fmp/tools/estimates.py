@@ -11,19 +11,28 @@ Server-side code lives in the edgar_updater repo:
 
 from __future__ import annotations
 
+import logging
 import sys
 from datetime import date, datetime, timezone
 from typing import Literal, Optional, Any
 
 from fmp.estimates_client import (
     ESTIMATE_API_URL as _ESTIMATE_API_URL,
-    MISSING_API_URL_ERROR as _MISSING_API_URL_ERROR,
+    ESTIMATES_NOT_CONFIGURED,
     get as _api_get,
 )
 from fmp.lineage import record_vendor_response, returns_vendor_lineage
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MIN_EPS_DELTA_PCT = 0.01
 DEFAULT_MIN_REVENUE_DELTA_PCT = 0.005
+
+
+def _estimates_not_configured() -> dict[str, Any]:
+    """The tools' answer with no estimates address set; the setting goes to the log only."""
+    logger.warning("Estimate revisions refused: ESTIMATE_API_URL is set empty in the environment.")
+    return {"status": "error", "error": ESTIMATES_NOT_CONFIGURED}
 
 
 def _normalize_tickers(tickers: Optional[list[str] | str]) -> list[str]:
@@ -182,10 +191,7 @@ def get_estimate_revisions(
             }
 
         if not _ESTIMATE_API_URL:
-            return {
-                "status": "error",
-                "error": _MISSING_API_URL_ERROR,
-            }
+            return _estimates_not_configured()
 
         return _get_estimate_revisions_http(clean_ticker, fiscal_date, period)
 
@@ -300,10 +306,7 @@ def screen_estimate_revisions(
         )
 
         if not _ESTIMATE_API_URL:
-            return {
-                "status": "error",
-                "error": _MISSING_API_URL_ERROR,
-            }
+            return _estimates_not_configured()
 
         clean_tickers = _normalize_tickers(tickers)
 

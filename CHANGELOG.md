@@ -3,6 +3,18 @@
 All notable changes to `fmp-mcp` are documented here. Entries follow the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention.
 
+## [0.5.9] — 2026-11-19
+
+### Added
+- Added `configure_cache_base()` so a host application can explicitly bind the FMP cache and time-series store root. Existing environment and XDG cache defaults remain unchanged for standalone consumers.
+- Registered two stable endpoints: `available_exchanges` (`/stable/available-exchanges`: FMP's exchange list with each code's name, country, `symbolSuffix` and delay; optional `extended`) and `symbol_search` (`/stable/search-symbol`: `query`, `limit`, `exchange`). Neither is cached. The legacy `search` endpoint and its `search_symbol` alias are unchanged.
+- `FMPTimeoutError` and `FMPConnectionError`, both subclasses of `FMPAPIError`: `FMPClient.fetch` raises them for a request that timed out and for a connection that failed or was refused, where it raised a bare `FMPAPIError` with the same message. A caller can tell an outage that waiting may clear by its type, never by its words; the transport's error is still not chained. Any other transport failure (a bad URL, too many redirects, a broken body) still raises `FMPAPIError`. Every caller that catches `FMPAPIError` catches both unchanged.
+- `fmp.figure_statements` and `FMPFetchResult.statements` / `VendorResponse`: the single canonical owner stating what an FMP figure measures (`{measure, period, basis}` under `value_semantics_core.figure_statement`). Exports `FMP_FIELD_CLASSIFICATIONS`, `fmp_field_classification`, `fmp_record_fiscal_year`, `fmp_record_period_end`, `fmp_row_currency`, `vendor_measure`, `vendor_basis`, `row_period`, `vendor_figure_statement`, `computed_statement`, `trailing_four_quarter_sum`, `vendor_row_statements`, `statements_table`, `VENDOR_UNCOMPARED_BASIS`, and `BASIS_NOT_RECORDED`. `fmp_fetch`, `compare_peers`, and `get_stock_fundamentals` attach validated `statements` entries (omitting `statements` when empty).
+
+### Changed
+- Raised `value-semantics-core` dependency floor from `>=2.1,<3` to `>=2.3.1,<3` (matching the 3-fact `figure_statement` contract imported by `fmp.figure_statements`) and pinned the `[build-system]` backend to `hatchling==1.33.0`.
+- An answer no longer names an environment setting. With no FMP key, `FMPClient` raises `FMPAuthenticationError("Market data from Financial Modeling Prep is not configured on this installation, so nothing was read. It is set up by whoever runs this installation.")` (`fmp.client.FMP_NOT_CONFIGURED`; was "FMP_API_KEY not found in environment"); the estimate-revision tools with an empty estimates address answer "Estimate revisions are not configured on this installation, so nothing was read. They are set up by whoever runs this installation." (`fmp.estimates_client.ESTIMATES_NOT_CONFIGURED`, replacing `MISSING_API_URL_ERROR`); a transcript whose corpus save is switched on with no corpus location answers "The transcript was not saved: saving transcripts to the research library is switched on but not set up on this installation. It is set up by whoever runs this installation." (`fmp.tools.transcripts.CORPUS_NOT_SET_UP`). Each setting is logged at a warning where the call is refused. Types and error codes are unchanged.
+
 ## [0.5.8] — 2026-10-23
 
 ### Changed

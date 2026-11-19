@@ -6,6 +6,7 @@ ETF/fund composition snapshot across holdings, sectors, countries, and metadata.
 
 from ._helpers import safe_float_or_none as _safe_float
 
+import contextvars
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -13,7 +14,7 @@ import re
 from typing import Any, Literal, Optional
 
 from ..client import FMPClient
-from ..exceptions import FMPEmptyResponseError, FMPValidationError
+from ..exceptions import FMPAPIError, FMPEmptyResponseError, FMPValidationError
 from ._file_output import FILE_OUTPUT_DIR, write_csv
 from .fmp_core import _batch_status, _resolve_symbols_list
 
@@ -104,7 +105,7 @@ def _safe_fetch_records(
     except FMPEmptyResponseError:
         return {"ok": True, "data": [], "error": None}
     except Exception as e:
-        if fallback_endpoint and "402" in str(e):
+        if fallback_endpoint and isinstance(e, FMPAPIError) and e.status_code == 402:
             try:
                 # v3 endpoints may accept fewer params; filter to symbol only
                 fb_params = {k: v for k, v in params.items() if k == "symbol"}
@@ -364,6 +365,7 @@ def get_etf_holdings(
         ) as executor:
             futures = {
                 executor.submit(
+                    contextvars.copy_context().run,
                     _safe_fetch_records,
                     client,
                     _SECTION_TO_ENDPOINT[section],

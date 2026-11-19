@@ -18,6 +18,7 @@ import csv
 import io
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -32,9 +33,11 @@ from .cache import FMPCache, get_cache
 from .exceptions import (
     FMPAPIError,
     FMPAuthenticationError,
+    FMPConnectionError,
     FMPEmptyResponseError,
     FMPEndpointError,
     FMPRateLimitError,
+    FMPTimeoutError,
     FMPValidationError,
 )
 from .lineage import (
@@ -53,6 +56,13 @@ from .registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# What a caller is told when no data-provider key is set. Only whoever runs the installation can set
+# one, so the answer names no setting; the setting is logged where the call is refused.
+FMP_NOT_CONFIGURED = (
+    "Market data from Financial Modeling Prep is not configured on this installation, so nothing "
+    "was read. It is set up by whoever runs this installation."
+)
 
 _configured = False
 _budget_guard: Callable | None = None
@@ -136,7 +146,7 @@ def _extract_by_path(data: dict, path: str) -> Any:
 def _normalize_response(
     endpoint: FMPEndpoint,
     endpoint_name: str,
-    data: list | dict,
+    data: Any,
     *,
     allow_empty: bool = False,
 ) -> pd.DataFrame:
@@ -160,13 +170,19 @@ def _normalize_response(
         if isinstance(data, dict):
             if "historical" in data:
                 data = data["historical"]
-            elif endpoint.response_type == "object":
-                data = [data]
-            else:
-                data = [data]
+
+    if data is not None and not isinstance(data, (list, dict)):
+        raise FMPAPIError(
+            f"Response for endpoint '{endpoint_name}' must be a list or object "
+            f"(got {type(data).__name__})",
+            endpoint=endpoint_name,
+        )
 
     if not data and not allow_empty:
         raise FMPEmptyResponseError(endpoint_name)
+
+    if isinstance(data, dict) and data:
+        data = [data]
 
     dataframe = pd.DataFrame(data)
     if endpoint.response_transform is not None:
@@ -287,7 +303,8 @@ class FMPClient:
     def _ensure_api_key(self) -> None:
         """Ensure API key is available, raise if not."""
         if not self.api_key:
-            raise FMPAuthenticationError("FMP_API_KEY not found in environment")
+            logger.warning("FMP call refused: FMP_API_KEY is not set in the environment.")
+            raise FMPAuthenticationError(FMP_NOT_CONFIGURED)
 
     BASE_URL_V4 = "https://financialmodelingprep.com/api/v4"
 
@@ -363,11 +380,19 @@ class FMPClient:
                 )
             except requests.exceptions.Timeout:
                 self._log_error(endpoint.name, "request_timeout")
-                raise FMPAPIError(
+                raise FMPTimeoutError(
                     f"Request timeout for endpoint '{endpoint.name}'",
                     endpoint=endpoint.name,
                 ) from None
+            except requests.exceptions.ConnectionError:
+                self._log_error(endpoint.name, "request_failed")
+                raise FMPConnectionError(
+                    f"Request failed for endpoint '{endpoint.name}'",
+                    endpoint=endpoint.name,
+                ) from None
             except requests.exceptions.RequestException:
+                # Any other transport failure (a bad URL, too many redirects, a broken body) is
+                # not known to clear by waiting: it stays the untyped vendor error.
                 self._log_error(endpoint.name, "request_failed")
                 raise FMPAPIError(
                     f"Request failed for endpoint '{endpoint.name}'",
@@ -422,10 +447,61 @@ class FMPClient:
             text_payload = resp.text or ""
             if not text_payload.strip():
                 return []
-            reader = csv.DictReader(io.StringIO(text_payload))
-            return [dict(row) for row in reader]
+            try:
+                reader = csv.reader(io.StringIO(text_payload), strict=True)
+                headers = next(reader)
+                if len(headers) != len(set(headers)):
+                    raise csv.Error("Duplicate CSV headers")
+                # DictReader silently pads/truncates ragged records. Preserve its
+                # blank-line handling, but require one cell per unique header.
+                return [
+                    dict(zip(headers, row, strict=True))
+                    for row in filter(None, reader)
+                ]
+            except (csv.Error, ValueError):
+                raise FMPAPIError(
+                    f"Invalid CSV response for endpoint '{endpoint.name}'",
+                    status_code=resp.status_code,
+                    endpoint=endpoint.name,
+                ) from None
 
-        return resp.json()
+        try:
+            return resp.json()
+        except requests.exceptions.JSONDecodeError:
+            content_type, body_excerpt = self._non_json_diagnostic(resp)
+            raise FMPAPIError(
+                (
+                    f"Invalid JSON response for endpoint '{endpoint.name}' "
+                    f"(HTTP {resp.status_code}, content-type={content_type}, "
+                    f"body_excerpt={body_excerpt!r})"
+                ),
+                status_code=resp.status_code,
+                endpoint=endpoint.name,
+                content_type=content_type,
+                body_excerpt=body_excerpt,
+            ) from None
+
+    _BODY_EXCERPT_MAX_CHARS = 200
+    _APIKEY_PARAM_RE = re.compile(r"(?i)(apikey=)[^&\s\"'<>]+")
+
+    def _non_json_diagnostic(self, resp: requests.Response) -> tuple[str, str]:
+        """Return (content_type, bounded apikey-scrubbed body excerpt) for non-JSON responses."""
+        raw_ct = resp.headers.get("Content-Type") if getattr(resp, "headers", None) else None
+        content_type = self._scrub_secrets((raw_ct or "unknown").strip()) or "unknown"
+        raw_text = getattr(resp, "text", None) or ""
+        scrubbed = " ".join(self._scrub_secrets(raw_text).split())
+        if len(scrubbed) > self._BODY_EXCERPT_MAX_CHARS:
+            scrubbed = scrubbed[: self._BODY_EXCERPT_MAX_CHARS - 3] + "..."
+        return content_type, scrubbed
+
+    def _scrub_secrets(self, text: str) -> str:
+        if not text:
+            return ""
+        scrubbed = self._APIKEY_PARAM_RE.sub(r"\1[REDACTED]", text)
+        api_key = getattr(self, "_api_key", None)
+        if isinstance(api_key, str) and api_key:
+            scrubbed = scrubbed.replace(api_key, "[REDACTED]")
+        return scrubbed
 
     def _log_rate_limit(self, endpoint_name: str) -> None:
         """Log rate limit hit."""

@@ -6,7 +6,9 @@ Give Claude (or any MCP-compatible AI) the ability to analyze stocks, screen mar
 
 This isn't a raw API wrapper. Each tool is purpose-built for a specific analytical task, composing multiple data sources into structured, analysis-ready outputs designed for AI consumption.
 
-Tool surface below was verified against `fmp/server.py` on 2026-04-30. The repo build exposes 20 MCP tools; the two estimate-revision tools require the `estimates` extra plus database access for useful live results.
+The source server registers 22 MCP tools (including imported tool registrations).
+The estimate-revision tools read the hosted estimates API; the `estimates` extra
+and PostgreSQL are needed for local estimate storage, not hosted MCP reads.
 
 ## What your AI can do
 
@@ -22,6 +24,8 @@ Tool surface below was verified against `fmp/server.py` on 2026-04-30. The repo 
 - `fmp_market_cap_check` — Compare current market cap against the latest annual filing value
 - `compare_peers` — Side-by-side peer comparison across 12 financial ratios
 - `get_earnings_transcript` — Parsed earnings calls with speaker attribution and Q&A sections
+- `get_stock_fundamentals` — Enriched stock lookup with financials, valuation, quality, and technicals
+- `get_price_performance_windows` — Compact benchmark-relative return windows
 
 **Stock Screening & Discovery**
 - `screen_stocks` — Screen by sector, market cap, beta, dividend, volume, and more
@@ -107,7 +111,10 @@ only hydrates environment and never imports FMP or application policy.
 `scripts/run_fmp_server.py` owns Risk credential hydration and policy setup
 before invoking the installed `fmp.server.run()` (which preserves the
 caller's policy). Risk-only wrappers live in `utils/fmp_compat.py` and
-`utils/fmp_fx.py`, and the local collector lives in `scripts/snapshot_estimates.py`.
+`utils/fmp_fx.py`. The former local estimates collector was
+[deleted in `fee0d9403`](https://github.com/henrysouchien/risk_module/commit/fee0d9403);
+see [estimate operations](../docs/reference/EARNINGS_ESTIMATES.md) for the hosted
+API and production collector.
 
 The source retains the Hank-only `transcript_kpi_fetcher.py` and
 `manifest_source_dispatcher.py`; public distribution sync excludes them.
@@ -160,5 +167,5 @@ You can also use a generic MCP config:
 
 ## Related Docs
 
-- `docs/reference/FMP_ENDPOINTS.md` — registered endpoint catalog
-- `docs/reference/MCP_SERVERS.md` — server registration and troubleshooting
+- [`FMP_ENDPOINTS.md`](../docs/reference/FMP_ENDPOINTS.md) — registered endpoint catalog
+- [`MCP_SERVERS.md`](../docs/reference/MCP_SERVERS.md) — server registration and troubleshooting

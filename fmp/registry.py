@@ -408,6 +408,40 @@ register_endpoint(
 
 register_endpoint(
     FMPEndpoint(
+        name="symbol_search",
+        path="/search-symbol",
+        description="Search symbols across global markets (stable): symbol, name, currency, exchangeFullName, exchange",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs/stable/search-symbol",
+        category="search",
+        api_version="stable",
+        params=[
+            EndpointParam("query", ParamType.STRING, required=True, description="Symbol text"),
+            EndpointParam("limit", ParamType.INTEGER, description="Max results"),
+            EndpointParam("exchange", ParamType.STRING, description="Filter by FMP exchange code"),
+        ],
+        cache_dir="cache/search",
+        cache_enabled=False,  # Search results should not be cached
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
+        name="available_exchanges",
+        path="/available-exchanges",
+        description="FMP's list of exchanges: exchange code, name, country, symbolSuffix, delay",
+        fmp_docs_url="https://site.financialmodelingprep.com/developer/docs/stable/available-exchanges",
+        category="search",
+        api_version="stable",
+        params=[
+            EndpointParam("extended", ParamType.BOOLEAN, description="Extended list (meaning not documented by FMP)"),
+        ],
+        cache_dir="cache/search",
+        cache_enabled=False,  # Recorded once into Risk's config, never served from cache
+    )
+)
+
+register_endpoint(
+    FMPEndpoint(
         name="profile",
         path="/profile/{symbol}",
         description="Company profile (name, sector, industry, description, currency)",

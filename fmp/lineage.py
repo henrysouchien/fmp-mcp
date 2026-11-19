@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import functools
 import hashlib
@@ -110,6 +110,7 @@ class VendorResponse:
     endpoint: str
     params: Mapping[str, Any]
     records: tuple[dict[str, Any], ...]
+    observed_at: datetime | None = dataclass_field(default=None, compare=False)
 
     def canonical_bytes(self) -> bytes:
         return _canonical_json_bytes(
@@ -176,6 +177,7 @@ class VendorResponseLog:
                     endpoint=str(endpoint),
                     params=_json_value(dict(params)),
                     records=_normalized_response(_response_records(response)),
+                    observed_at=datetime.now(timezone.utc),
                 ),
             )
         )
@@ -393,6 +395,22 @@ class FMPFetchResult:
 
         values = self._lineage_descriptor["values"]
         return tuple(deepcopy(dict(value)) for value in values)
+
+    @property
+    def statements(self) -> tuple[dict[str, Any], ...]:
+        """Return the typed ``statements`` table stamped for this response's figures."""
+
+        from .figure_statements import statements_table, vendor_row_statements
+
+        table = statements_table(
+            vendor_row_statements(
+                self.endpoint,
+                self._validated_params,
+                self._normalized_records,
+                observed_at=self.observed_at,
+            )
+        )
+        return tuple(deepcopy(dict(entry)) for entry in table)
 
 
 def _json_value(value: Any) -> Any:

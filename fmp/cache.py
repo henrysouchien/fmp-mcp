@@ -284,7 +284,28 @@ _timeseries_stores: dict[str, TimeSeriesStore] = {}
 _timeseries_store_guard = threading.Lock()
 
 
+_configured_cache_base: Path | None = None
+
+
+def configure_cache_base(path: str | os.PathLike[str]) -> None:
+    """Bind the FMP cache base directory for this process, overriding ``FMP_CACHE_DIR``.
+
+    Reconfiguring to a different base drops the module cache and time series
+    store singletons so none keeps writing under the old base.
+    """
+    global _cache, _configured_cache_base
+    configured = os.fspath(path)
+    resolved = Path(configured).expanduser().resolve()
+    with _timeseries_store_guard:
+        if resolved != _configured_cache_base:
+            _configured_cache_base = resolved
+            _cache = None
+            _timeseries_stores.clear()
+
+
 def _default_cache_base() -> Path:
+    if _configured_cache_base is not None:
+        return _configured_cache_base
     env = os.getenv("FMP_CACHE_DIR")
     if env:
         return Path(env).expanduser().resolve()

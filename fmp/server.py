@@ -145,7 +145,7 @@ def parse_json_list(value: Any) -> list | None:
     return parsed
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Registry-admitted provider GETs also expose output=file CSV creation."})
+@mcp.tool(title="Fetch financial data", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Registry-admitted provider GETs also expose output=file CSV creation."})
 def fmp_fetch(
     endpoint: str,
     symbol: Optional[str] = None,
@@ -262,7 +262,7 @@ def fmp_fetch(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-search endpoint and returns inline records."})
+@mcp.tool(title="Find company by name", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-search endpoint and returns inline records."})
 def fmp_search(
     query: str,
     limit: int = 10,
@@ -291,7 +291,7 @@ def fmp_search(
     return _fmp_search(query=query, limit=limit, exchange=exchange)
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads stock and benchmark historical prices and computes inline relative-return windows."})
+@mcp.tool(title="Compare price performance", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads stock and benchmark historical prices and computes inline relative-return windows."})
 def get_price_performance_windows(
     symbol: str,
     benchmark_symbol: str = "SPY",
@@ -341,7 +341,7 @@ def get_price_performance_windows(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-profile endpoint and returns inline profile data."})
+@mcp.tool(title="Pull company profile", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company-profile endpoint and returns inline profile data."})
 def fmp_profile(
     symbol: Optional[str] = None,
     ticker: Optional[str] = None,
@@ -384,7 +384,7 @@ def fmp_profile(
     return _fmp_profile(symbol=symbol, ticker=ticker)
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads profile and annual key metrics and computes inline market-cap differences."})
+@mcp.tool(title="Cross-check market cap", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads profile and annual key metrics and computes inline market-cap differences."})
 def fmp_market_cap_check(
     symbol: Optional[str] = None,
     symbols: Optional[list[str] | str] = None,
@@ -417,7 +417,7 @@ def fmp_market_cap_check(
     return _fmp_market_cap_check(symbol=symbol)
 
 
-@mcp.tool(meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Enumerates in-process endpoint registry metadata without provider dispatch."})
+@mcp.tool(title="Browse market data sources", meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Enumerates in-process endpoint registry metadata without provider dispatch."})
 def fmp_list_endpoints(category: Optional[str] = None) -> dict:
     """
     List available FMP data endpoints.
@@ -447,7 +447,7 @@ def fmp_list_endpoints(category: Optional[str] = None) -> dict:
     return _fmp_list_endpoints(category=category)
 
 
-@mcp.tool(meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Returns local registered-endpoint documentation without provider dispatch."})
+@mcp.tool(title="Explain data endpoint", meta={"hank/code-disposition": "pure_local", "hank/code-reason": "Returns local registered-endpoint documentation without provider dispatch."})
 def fmp_describe(endpoint: str) -> dict:
     """
     Get detailed documentation for an FMP endpoint.
@@ -472,7 +472,7 @@ def fmp_describe(endpoint: str) -> dict:
     return _fmp_describe(endpoint=endpoint)
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company screener and normalizes inline results."})
+@mcp.tool(title="Screen stocks by fundamentals", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads the registered company screener and normalizes inline results."})
 def screen_stocks(
     sector: Optional[str] = None,
     industry: Optional[str] = None,
@@ -554,7 +554,7 @@ def screen_stocks(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted latest-estimate and revision endpoints; does not collect snapshots."})
+@mcp.tool(title="Track estimate revisions", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted latest-estimate and revision endpoints; does not collect snapshots."})
 def get_estimate_revisions(
     ticker: str,
     fiscal_date: Optional[str] = None,
@@ -589,7 +589,7 @@ def get_estimate_revisions(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted revision summaries and filters and ranks inline estimate deltas."})
+@mcp.tool(title="Screen estimate momentum", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads hosted revision summaries and filters and ranks inline estimate deltas."})
 def screen_estimate_revisions(
     tickers: Optional[str] = None,
     days: int = 30,
@@ -647,7 +647,7 @@ def screen_estimate_revisions(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Economic indicator and calendar reads also expose output=file CSV creation."})
+@mcp.tool(title="Check economic indicators", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Economic indicator and calendar reads also expose output=file CSV creation."})
 def get_economic_data(
     mode: Literal["indicator", "calendar"] = "indicator",
     indicator_name: Optional[str] = None,
@@ -710,7 +710,7 @@ def get_economic_data(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes sector and industry performance, valuation, and optional company reads inline."})
+@mcp.tool(title="Review sector performance", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes sector and industry performance, valuation, and optional company reads inline."})
 def get_sector_overview(
     date: Optional[str] = None,
     sector: Optional[str] = None,
@@ -764,7 +764,7 @@ def get_sector_overview(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes index history, sectors, movers, and event reads into inline market context."})
+@mcp.tool(title="Snapshot market conditions", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes index history, sectors, movers, and event reads into inline market context."})
 def get_market_context(
     include: Optional[str] = None,
     format: Literal["full", "summary"] = "summary",
@@ -809,7 +809,7 @@ def get_market_context(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads institutional holders and position summaries and returns inline ownership analytics."})
+@mcp.tool(title="Review institutional holders", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads institutional holders and position summaries and returns inline ownership analytics."})
 def get_institutional_ownership(
     symbol: str,
     year: Optional[int] = None,
@@ -847,7 +847,7 @@ def get_institutional_ownership(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads insider transactions and statistics and computes inline trade-flow summaries."})
+@mcp.tool(title="Review insider trading", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads insider transactions and statistics and computes inline trade-flow summaries."})
 def get_insider_trades(
     symbol: str,
     limit: int = 20,
@@ -878,7 +878,7 @@ def get_insider_trades(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "ETF holdings reads also expose full-holdings output=file CSV creation."})
+@mcp.tool(title="Break down ETF holdings", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "ETF holdings reads also expose full-holdings output=file CSV creation."})
 def get_etf_holdings(
     symbol: Optional[str] = None,
     include: Optional[list[str] | str] = None,
@@ -928,7 +928,7 @@ def get_etf_holdings(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered stock, general, or press news and filters inline articles."})
+@mcp.tool(title="Scan recent news", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered stock, general, or press news and filters inline articles."})
 def get_news(
     symbols: Optional[str] = None,
     mode: Literal["stock", "general", "press"] = "stock",
@@ -988,7 +988,7 @@ def get_news(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered corporate calendars and summarizes inline events over date windows."})
+@mcp.tool(title="Check upcoming corporate events", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Reads registered corporate calendars and summarizes inline events over date windows."})
 def get_events_calendar(
     event_type: Literal["earnings", "dividends", "splits", "ipos", "all"] = "earnings",
     from_date: Optional[str] = None,
@@ -1043,7 +1043,7 @@ def get_events_calendar(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Risk-bound automatic peer discovery can invoke a model and persist global peer-reference rows."})
+@mcp.tool(title="Compare against peers", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Risk-bound automatic peer discovery can invoke a model and persist global peer-reference rows."})
 def compare_peers(
     symbol: str,
     peers: Optional[str] = None,
@@ -1101,7 +1101,7 @@ def compare_peers(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes profile, quote, financial, valuation, and history reads; nested technical output is summary-only."})
+@mcp.tool(title="Pull stock fundamentals", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Composes profile, quote, financial, valuation, and history reads; nested technical output is summary-only."})
 def get_stock_fundamentals(
     symbol: Optional[str] = None,
     include: Optional[str] = None,
@@ -1159,7 +1159,7 @@ def get_stock_fundamentals(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Indicator reads and signal computation also expose full output=file CSV creation."})
+@mcp.tool(title="Read technical signals", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "Indicator reads and signal computation also expose full output=file CSV creation."})
 def get_technical_analysis(
     symbol: str,
     timeframe: Literal["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"] = "1day",
@@ -1219,7 +1219,7 @@ def get_technical_analysis(
     )
 
 
-@mcp.tool(meta={"hank/code-disposition": "read_composable", "hank/code-reason": "File output writes transcript markdown and can ingest canonical corpus documents and indexed sections."})
+@mcp.tool(title="Parse earnings call", meta={"hank/code-disposition": "read_composable", "hank/code-reason": "File output writes transcript markdown and can ingest canonical corpus documents and indexed sections."})
 def get_earnings_transcript(
     symbol: str,
     year: int,

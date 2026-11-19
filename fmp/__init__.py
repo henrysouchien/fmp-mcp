@@ -50,7 +50,7 @@ Available Endpoints:
     - analyst: analyst_estimates, price_target
 """
 
-__version__ = "0.5.8"
+__version__ = "0.5.9"
 
 from .client import FMPClient, fetch, fetch_with_lineage, get_client
 from .definitions import (
@@ -62,11 +62,13 @@ from .definitions import (
 from .exceptions import (
     FMPAPIError,
     FMPAuthenticationError,
+    FMPConnectionError,
     FMPDefinitionArtifactError,
     FMPEmptyResponseError,
     FMPEndpointError,
     FMPError,
     FMPRateLimitError,
+    FMPTimeoutError,
     FMPValidationError,
 )
 from .registry import (
@@ -79,12 +81,30 @@ from .registry import (
     list_endpoints,
     register_endpoint,
 )
-from .lineage import FMPFetchResult
+from .lineage import FMPFetchResult, VendorResponse
+from .figure_statements import (
+    BASIS_NOT_RECORDED,
+    FMP_FIELD_CLASSIFICATIONS,
+    VENDOR_UNCOMPARED_BASIS,
+    computed_statement,
+    fmp_field_classification,
+    fmp_record_fiscal_year,
+    fmp_record_period_end,
+    fmp_row_currency,
+    row_period,
+    statements_table,
+    trailing_four_quarter_sum,
+    vendor_basis,
+    vendor_figure_statement,
+    vendor_measure,
+    vendor_row_statements,
+)
 
 __all__ = [
     # Client
     "FMPClient",
     "FMPFetchResult",
+    "VendorResponse",
     "fetch",
     "fetch_with_lineage",
     "get_client",
@@ -97,10 +117,12 @@ __all__ = [
     "FMPError",
     "FMPAPIError",
     "FMPAuthenticationError",
+    "FMPConnectionError",
     "FMPDefinitionArtifactError",
     "FMPEmptyResponseError",
     "FMPEndpointError",
     "FMPRateLimitError",
+    "FMPTimeoutError",
     "FMPValidationError",
     # Registry
     "FMPEndpoint",
@@ -111,4 +133,20 @@ __all__ = [
     "get_endpoint",
     "list_endpoints",
     "get_categories",
+    # What a figure measures
+    "BASIS_NOT_RECORDED",
+    "FMP_FIELD_CLASSIFICATIONS",
+    "VENDOR_UNCOMPARED_BASIS",
+    "computed_statement",
+    "fmp_field_classification",
+    "fmp_record_fiscal_year",
+    "fmp_record_period_end",
+    "fmp_row_currency",
+    "row_period",
+    "statements_table",
+    "trailing_four_quarter_sum",
+    "vendor_basis",
+    "vendor_figure_statement",
+    "vendor_measure",
+    "vendor_row_statements",
 ]

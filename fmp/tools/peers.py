@@ -26,6 +26,16 @@ from typing import Any, Callable, Optional, Literal
 from cachetools import TTLCache
 
 from ..client import FMPClient
+from ..figure_statements import (
+    _is_figure,
+    computed_statement,
+    row_period,
+    statements_table,
+    trailing_four_quarter_sum,
+    vendor_basis,
+    vendor_figure_statement,
+    vendor_measure,
+)
 from ..lineage import (
     active_vendor_response_log,
     returns_vendor_lineage,
@@ -34,6 +44,7 @@ from ..lineage import (
 from fmp._shared.fmp_helpers import (
     compute_forward_ev_sales,
     compute_forward_pe,
+    parse_fmp_float,
 )
 
 
@@ -304,6 +315,9 @@ def _fetch_uncached_ratios_and_estimates(
         metrics_payload, _ = responses["metrics"]
         metrics_dict = _extract_first_row(metrics_payload)
 
+        observed_at = datetime.fromisoformat(retrieved_at.replace("Z", "+00:00"))
+        metric_statements: dict[str, dict[str, Any]] = {}
+
         income_dict: dict[str, object] = {}
         income_rows: list[dict] = []
         quarterly_income_payload, _ = responses["quarterly_income"]
@@ -313,22 +327,23 @@ def _fetch_uncached_ratios_and_estimates(
             income_rows = [quarterly_income_payload]
 
         if income_rows:
-            rev_values = [row["revenue"] for row in income_rows if row.get("revenue") is not None]
-            ebitda_values = [row["ebitda"] for row in income_rows if row.get("ebitda") is not None]
-            ebit_values = [row["ebit"] for row in income_rows if row.get("ebit") is not None]
-            dna_values = [
-                row["depreciationAndAmortization"]
-                for row in income_rows
-                if row.get("depreciationAndAmortization") is not None
-            ]
-            if len(rev_values) == 4:
-                income_dict["_ttm_revenue"] = sum(rev_values)
-            if len(ebitda_values) == 4:
-                income_dict["_ttm_ebitda"] = sum(ebitda_values)
-            if len(ebit_values) == 4:
-                income_dict["_ttm_ebit"] = sum(ebit_values)
-            if len(dna_values) == 4:
-                income_dict["_ttm_depreciation_and_amortization"] = sum(dna_values)
+            for out_key, src_field in (
+                ("_ttm_revenue", "revenue"),
+                ("_ttm_ebitda", "ebitda"),
+                ("_ttm_ebit", "ebit"),
+                ("_ttm_depreciation_and_amortization", "depreciationAndAmortization"),
+            ):
+                summed = trailing_four_quarter_sum(
+                    income_rows,
+                    endpoint="income_statement",
+                    field=src_field,
+                    observed_at=observed_at,
+                    parse_number=parse_fmp_float,
+                )
+                if summed is not None:
+                    total_val, stmt = summed
+                    income_dict[out_key] = total_val
+                    metric_statements[out_key] = stmt
 
         estimates: list[dict] | None = None
         estimates_payload, estimates_error = responses["estimates"]
@@ -367,9 +382,8 @@ def _fetch_uncached_ratios_and_estimates(
             cash_flow_rows = [row for row in cash_flow_payload if isinstance(row, dict)]
         elif isinstance(cash_flow_payload, dict):
             cash_flow_rows = [cash_flow_payload]
-        fcf_values = [row["freeCashFlow"] for row in cash_flow_rows if row.get("freeCashFlow") is not None]
-        free_cash_flow = sum(fcf_values) if len(fcf_values) == 4 else None
         cash_flow_ttm_dict: dict[str, object] = {}
+        cash_flow_ttm_statements: dict[str, dict[str, Any]] = {}
         for field in (
             "freeCashFlow",
             "netDividendsPaid",
@@ -378,12 +392,35 @@ def _fetch_uncached_ratios_and_estimates(
             "operatingCashFlow",
             "capitalExpenditure",
         ):
-            values = [row[field] for row in cash_flow_rows if row.get(field) is not None]
-            if len(values) == 4:
-                cash_flow_ttm_dict[field] = sum(values)
+            summed_cf = trailing_four_quarter_sum(
+                cash_flow_rows,
+                endpoint="cash_flow",
+                field=field,
+                observed_at=observed_at,
+                parse_number=parse_fmp_float,
+            )
+            if summed_cf is not None:
+                cf_val, cf_stmt = summed_cf
+                cash_flow_ttm_dict[field] = cf_val
+                cash_flow_ttm_statements[field] = cf_stmt
+        free_cash_flow = cash_flow_ttm_dict.get("freeCashFlow")
         revenue = income_dict.get("_ttm_revenue")
-        if free_cash_flow is not None and revenue is not None and revenue > 0:
+        if (
+            isinstance(free_cash_flow, (int, float))
+            and isinstance(revenue, (int, float))
+            and revenue > 0
+        ):
             income_dict["_computed_fcf_margin"] = free_cash_flow / revenue
+            fcf_stmt = cash_flow_ttm_statements["freeCashFlow"]
+            rev_stmt = metric_statements["_ttm_revenue"]
+            metric_statements["_computed_fcf_margin"] = computed_statement(
+                operation="divide",
+                inputs=[
+                    {**fcf_stmt, "kind": "statement"},
+                    {**rev_stmt, "kind": "statement"},
+                ],
+                period=fcf_stmt["period"],
+            )
 
         latest_balance_sheet_payload, _ = responses["latest_balance_sheet"]
         balance_sheet_dict = _extract_first_row(latest_balance_sheet_payload)
@@ -397,10 +434,37 @@ def _fetch_uncached_ratios_and_estimates(
                 income_dict,
             )
 
+        for key, value in metrics_dict.items():
+            if _is_figure(key, value):
+                metric_statements[key] = vendor_figure_statement(
+                    "key_metrics_ttm",
+                    {"symbol": normalized_ticker},
+                    metrics_dict,
+                    key,
+                    observed_at=observed_at,
+                )
+        for key, value in ratios_dict.items():
+            if _is_figure(key, value):
+                metric_statements[key] = vendor_figure_statement(
+                    "ratios_ttm",
+                    {"symbol": normalized_ticker},
+                    ratios_dict,
+                    key,
+                    observed_at=observed_at,
+                )
+
         merged = {**metrics_dict, **income_dict, **ratios_dict}
         for field in ("cashAndCashEquivalents", "netDebt"):
             if field in balance_sheet_dict:
                 merged[field] = balance_sheet_dict[field]
+                if _is_figure(field, balance_sheet_dict[field]):
+                    metric_statements[field] = vendor_figure_statement(
+                        "balance_sheet",
+                        {"symbol": normalized_ticker, "period": "quarter"},
+                        balance_sheet_dict,
+                        field,
+                        observed_at=observed_at,
+                    )
         merged["forwardPE"] = forward_pe_result.get("forward_pe")
         merged["forwardPEBasis"] = forward_pe_result.get("forward_pe_basis")
         merged["forwardPEFiscalPeriod"] = forward_pe_result.get("fiscal_period")
@@ -410,6 +474,68 @@ def _fetch_uncached_ratios_and_estimates(
             estimates,
             last_reported_date,
         )
+
+        fy1_period_text = str(forward_pe_result.get("fiscal_period") or "")[:10]
+        fy1_row = next(
+            (
+                row
+                for row in (estimates or [])
+                if fy1_period_text and str(row.get("date") or "")[:10] == fy1_period_text
+            ),
+            (estimates[0] if estimates else None),
+        )
+        if fy1_row is not None:
+            if _is_figure("forwardPE", merged.get("forwardPE")):
+                price_stmt = vendor_figure_statement(
+                    "profile",
+                    {"symbol": normalized_ticker},
+                    profile_row,
+                    "price",
+                    observed_at=observed_at,
+                )
+                eps_stmt = vendor_figure_statement(
+                    "analyst_estimates",
+                    {"symbol": normalized_ticker, "period": "annual"},
+                    fy1_row,
+                    "epsAvg",
+                    observed_at=observed_at,
+                )
+                metric_statements["forwardPE"] = computed_statement(
+                    operation="divide",
+                    inputs=[
+                        {**price_stmt, "kind": "statement"},
+                        {**eps_stmt, "kind": "statement"},
+                    ],
+                    period=eps_stmt["period"],
+                )
+            if _is_figure("forwardPEAnalystCount", merged.get("forwardPEAnalystCount")):
+                metric_statements["forwardPEAnalystCount"] = vendor_figure_statement(
+                    "analyst_estimates",
+                    {"symbol": normalized_ticker, "period": "annual"},
+                    fy1_row,
+                    "numAnalystsEps",
+                    observed_at=observed_at,
+                )
+            if (
+                _is_figure("_computed_forward_ev_sales", merged.get("_computed_forward_ev_sales"))
+                and "enterpriseValueTTM" in metric_statements
+            ):
+                ev_stmt = metric_statements["enterpriseValueTTM"]
+                rev_est_stmt = vendor_figure_statement(
+                    "analyst_estimates",
+                    {"symbol": normalized_ticker, "period": "annual"},
+                    fy1_row,
+                    "revenueAvg",
+                    observed_at=observed_at,
+                )
+                metric_statements["_computed_forward_ev_sales"] = computed_statement(
+                    operation="divide",
+                    inputs=[
+                        {**ev_stmt, "kind": "statement"},
+                        {**rev_est_stmt, "kind": "statement"},
+                    ],
+                    period=rev_est_stmt["period"],
+                )
 
         reported_currency = None
         if income_rows:
@@ -422,6 +548,18 @@ def _fetch_uncached_ratios_and_estimates(
                     if key in merged and merged[key] is not None:
                         try:
                             merged[key] = float(merged[key]) * fx_rate
+                            if key in metric_statements:
+                                orig = metric_statements[key]
+                                metric_statements[key] = computed_statement(
+                                    operation="fx_convert",
+                                    parameters={
+                                        "from_currency": str(reported_currency),
+                                        "to_currency": "USD",
+                                        "fx_rate": float(fx_rate),
+                                    },
+                                    inputs=[{**orig, "kind": "statement"}],
+                                    period=orig["period"],
+                                )
                         except (TypeError, ValueError):
                             pass
                 _convert_payload_values(
@@ -471,6 +609,7 @@ def _fetch_uncached_ratios_and_estimates(
             "enterprise_values_ttm": enterprise_values_dict,
             "_metadata": {
                 "last_reported_fiscal_date": last_reported_date,
+                "metric_statements": metric_statements,
             },
         }
 
@@ -753,6 +892,68 @@ def _number_or_none(value: object) -> float | None:
         return None
 
 
+def _peer_ticker_statements(
+    ticker: str,
+    ratios: dict[str, Any],
+    raw_payloads: dict[str, object] | None,
+    retrieved_at: str | None,
+) -> dict[str, dict[str, Any]]:
+    meta = (raw_payloads or {}).get("_metadata")
+    recorded = dict(meta.get("metric_statements") or {}) if isinstance(meta, dict) else {}
+    obs_dt = datetime.now(timezone.utc)
+    if isinstance(retrieved_at, str) and retrieved_at.strip():
+        try:
+            obs_dt = datetime.fromisoformat(retrieved_at.strip().replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    for key, val in ratios.items():
+        if key not in recorded and _is_figure(key, val):
+            recorded[key] = vendor_figure_statement(
+                "ratios_ttm",
+                {"symbol": ticker},
+                ratios,
+                key,
+                observed_at=obs_dt,
+            )
+    return recorded
+
+
+def _peer_payload_statements(
+    *,
+    format: Literal["full", "summary"],
+    tickers_order: list[str],
+    ratios_by_ticker: dict[str, dict],
+    raw_payloads_by_ticker: dict[str, dict[str, object]],
+    retrieved_at_by_ticker: dict[str, str],
+    comparison: list[dict] | None = None,
+) -> list[dict[str, Any]]:
+    by_ticker = {
+        ticker: _peer_ticker_statements(
+            ticker,
+            ratios_by_ticker[ticker],
+            raw_payloads_by_ticker.get(ticker),
+            retrieved_at_by_ticker.get(ticker),
+        )
+        for ticker in tickers_order
+    }
+    by_place: dict[tuple[str | int, ...], dict[str, Any]] = {}
+    if format == "full":
+        for ticker in tickers_order:
+            for key, val in ratios_by_ticker[ticker].items():
+                if _is_figure(key, val) and key in by_ticker[ticker]:
+                    by_place[("ratios", ticker, key)] = by_ticker[ticker][key]
+    else:
+        for row_idx, row in enumerate(comparison or ()):
+            metric_key = str(row.get("metric_key") or "")
+            if not metric_key:
+                continue
+            for ticker in tickers_order:
+                val = row.get(ticker)
+                if _is_figure(ticker, val) and metric_key in by_ticker[ticker]:
+                    by_place[("comparison", row_idx, ticker)] = by_ticker[ticker][metric_key]
+    return statements_table(by_place)
+
+
 # === Tool ===
 
 @returns_vendor_lineage("compare_peers")
@@ -959,6 +1160,13 @@ def compare_peers(
 
         # Step 3: Build output
         if format == "full":
+            full_stmts = _peer_payload_statements(
+                format="full",
+                tickers_order=tickers_order,
+                ratios_by_ticker=ratios_by_ticker,
+                raw_payloads_by_ticker=raw_payloads_by_ticker,
+                retrieved_at_by_ticker=retrieved_at_by_ticker,
+            )
             payload = {
                 "status": "success",
                 "subject": symbol,
@@ -968,6 +1176,8 @@ def compare_peers(
                 "ratios": {t: ratios_by_ticker[t] for t in tickers_order},
                 "failed_tickers": failed_tickers,
             }
+            if full_stmts:
+                payload["statements"] = full_stmts
             if peer_resolution is not None:
                 payload["peer_context"] = peer_resolution.get("peer_context")
                 payload["peer_resolution"] = peer_resolution
@@ -991,6 +1201,14 @@ def compare_peers(
         # Summary format: comparison table with default or specified metrics
         metrics = DEFAULT_PEER_METRICS
         comparison = _build_comparison_table(ratios_by_ticker, metrics, tickers_order)
+        summary_stmts = _peer_payload_statements(
+            format="summary",
+            tickers_order=tickers_order,
+            ratios_by_ticker=ratios_by_ticker,
+            raw_payloads_by_ticker=raw_payloads_by_ticker,
+            retrieved_at_by_ticker=retrieved_at_by_ticker,
+            comparison=comparison,
+        )
 
         payload = {
             "status": "success",
@@ -1005,6 +1223,8 @@ def compare_peers(
             },
             "failed_tickers": failed_tickers,
         }
+        if summary_stmts:
+            payload["statements"] = summary_stmts
         if peer_resolution is not None:
             payload["peer_context"] = peer_resolution.get("peer_context")
             payload["peer_resolution"] = peer_resolution

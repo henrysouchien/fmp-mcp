@@ -17,6 +17,7 @@ Architecture note:
 - Interprets signals into actionable summary
 """
 
+import contextvars
 import logging
 import re
 import sys
@@ -272,7 +273,7 @@ def _parallel_fetch(
 
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {
-            executor.submit(_fetch_one, ep, period): (ep, period)
+            executor.submit(contextvars.copy_context().run, _fetch_one, ep, period): (ep, period)
             for ep, period in fetches
         }
         for future in as_completed(futures):

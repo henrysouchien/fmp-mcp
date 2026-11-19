@@ -6,18 +6,28 @@ Enriched fundamentals and pricing lookup for a single stock symbol.
 
 from __future__ import annotations
 
+import contextvars
 import math
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from ..client import FMPClient
 from ..exceptions import FMPEmptyResponseError, FMPValidationError
+from ..figure_statements import (
+    computed_statement,
+    resolve_statements,
+    statements_table,
+    trailing_four_quarter_sum,
+    vendor_figure_statement,
+)
+from ..lineage import returns_vendor_lineage
 from ..quality_signals import compute_quality_signals
 from ._helpers import _last_trading_day
 from .fmp_core import _batch_status, _resolve_symbols_list
 from .technical import get_technical_analysis
+from value_semantics_core.figure_statement import figure_places
 from fmp._shared.fmp_helpers import (
     _get_last_reported_fiscal_date,
     compute_forward_ev_sales,
@@ -237,46 +247,38 @@ def _build_quote(quote_data: Any) -> tuple[dict[str, Any] | None, list[str]]:
 def _build_financials(
     quarterly_income: Any,
     quarterly_cash_flow: Any,
+    *,
+    observed_at: datetime | None = None,
+    statement_out: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Build the financials section with TTM absolute figures."""
     try:
         income_rows = _records_from_payload(quarterly_income)
         cash_flow_rows = _records_from_payload(quarterly_cash_flow)
+        obs_dt = observed_at or datetime.now(timezone.utc)
 
         section: dict[str, Any] = {}
 
-        def _ttm_sum(rows: list[dict[str, Any]], field: str) -> float | None:
-            """Sum 4 parsed quarterly values. Returns None if fewer than 4 valid."""
-            values = []
-            for row in rows:
-                parsed = parse_fmp_float(row.get(field))
-                if parsed is not None and math.isfinite(parsed):
-                    values.append(parsed)
-            return sum(values) if len(values) == 4 else None
-
-        rev = _ttm_sum(income_rows, "revenue")
-        if rev is not None:
-            section["revenue_ttm"] = rev
-
-        ebitda = _ttm_sum(income_rows, "ebitda")
-        if ebitda is not None:
-            section["ebitda_ttm"] = ebitda
-
-        ni = _ttm_sum(income_rows, "netIncome")
-        if ni is not None:
-            section["net_income_ttm"] = ni
-
-        fcf = _ttm_sum(cash_flow_rows, "freeCashFlow")
-        if fcf is not None:
-            section["free_cash_flow_ttm"] = fcf
-
-        ocf = _ttm_sum(cash_flow_rows, "operatingCashFlow")
-        if ocf is not None:
-            section["operating_cash_flow_ttm"] = ocf
-
-        capex = _ttm_sum(cash_flow_rows, "capitalExpenditure")
-        if capex is not None:
-            section["capex_ttm"] = capex
+        for out_key, rows, endpoint, src_field in (
+            ("revenue_ttm", income_rows, "income_statement", "revenue"),
+            ("ebitda_ttm", income_rows, "income_statement", "ebitda"),
+            ("net_income_ttm", income_rows, "income_statement", "netIncome"),
+            ("free_cash_flow_ttm", cash_flow_rows, "cash_flow", "freeCashFlow"),
+            ("operating_cash_flow_ttm", cash_flow_rows, "cash_flow", "operatingCashFlow"),
+            ("capex_ttm", cash_flow_rows, "cash_flow", "capitalExpenditure"),
+        ):
+            summed = trailing_four_quarter_sum(
+                rows,
+                endpoint=endpoint,
+                field=src_field,
+                observed_at=obs_dt,
+                parse_number=parse_fmp_float,
+            )
+            if summed is not None:
+                total_val, stmt = summed
+                section[out_key] = total_val
+                if statement_out is not None:
+                    statement_out[out_key] = stmt
 
         if not section:
             return None, ["financials: no usable quarterly data returned."]
@@ -686,6 +688,341 @@ def _normalize_include(
     return normalized, invalid
 
 
+def _first_present_key(record: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = record.get(key)
+        if value is not None and value != "":
+            return key
+    return keys[0]
+
+
+def _stock_fundamentals_statements(
+    *,
+    symbol: str,
+    response: dict[str, Any],
+    raw_results: dict[str, Any],
+    financial_statements: dict[str, dict[str, Any]],
+    forward_pe_result: dict[str, Any],
+    observed_at: datetime,
+) -> list[dict[str, Any]]:
+    by_place: dict[tuple[str | int, ...], dict[str, Any]] = {}
+    quote_row = _first_record(raw_results.get("quote"))
+    ratios_row = _first_record(raw_results.get("ratios"))
+    key_metrics_row = _first_record(raw_results.get("key_metrics"))
+    estimates = _records_from_payload(raw_results.get("analyst_estimates"))
+    fy1_period_text = str(forward_pe_result.get("fiscal_period") or "")[:10]
+    fy1_row = next(
+        (
+            row
+            for row in estimates
+            if fy1_period_text and str(row.get("date") or "")[:10] == fy1_period_text
+        ),
+        (estimates[0] if estimates else {}),
+    )
+
+    quote_section = response.get("quote")
+    if isinstance(quote_section, dict):
+        quote_field_map = {
+            "price": ("price",),
+            "change": ("change",),
+            "change_percent": ("changesPercentage", "changePercent"),
+            "market_cap": ("marketCap",),
+            "volume": ("volume",),
+            "eps": ("eps",),
+        }
+        for out_key, candidates in quote_field_map.items():
+            if out_key in quote_section:
+                native_field = _first_present_key(quote_row, *candidates)
+                by_place[("quote", out_key)] = vendor_figure_statement(
+                    "quote",
+                    {"symbol": symbol},
+                    quote_row,
+                    native_field,
+                    observed_at=observed_at,
+                )
+
+    fin_section = response.get("financials")
+    if isinstance(fin_section, dict):
+        for out_key, stmt in financial_statements.items():
+            if out_key in fin_section:
+                by_place[("financials", out_key)] = stmt
+
+    val_section = response.get("valuation")
+    if isinstance(val_section, dict):
+        if "forward_pe" in val_section:
+            price_stmt = vendor_figure_statement(
+                "quote", {"symbol": symbol}, quote_row, "price", observed_at=observed_at
+            )
+            eps_stmt = vendor_figure_statement(
+                "analyst_estimates",
+                {"symbol": symbol, "period": "annual"},
+                fy1_row,
+                "epsAvg",
+                observed_at=observed_at,
+            )
+            by_place[("valuation", "forward_pe")] = computed_statement(
+                operation="divide",
+                inputs=[
+                    {**price_stmt, "kind": "statement"},
+                    {**eps_stmt, "kind": "statement"},
+                ],
+                period=eps_stmt["period"],
+            )
+        if "fy1_eps" in val_section:
+            by_place[("valuation", "fy1_eps")] = vendor_figure_statement(
+                "analyst_estimates",
+                {"symbol": symbol, "period": "annual"},
+                fy1_row,
+                "epsAvg",
+                observed_at=observed_at,
+            )
+        if "analyst_count_eps" in val_section:
+            by_place[("valuation", "analyst_count_eps")] = vendor_figure_statement(
+                "analyst_estimates",
+                {"symbol": symbol, "period": "annual"},
+                fy1_row,
+                "numAnalystsEps",
+                observed_at=observed_at,
+            )
+        if "pe_ratio_ttm" in val_section:
+            by_place[("valuation", "pe_ratio_ttm")] = vendor_figure_statement(
+                "ratios_ttm",
+                {"symbol": symbol},
+                ratios_row,
+                _first_present_key(
+                    ratios_row,
+                    "priceToEarningsRatioTTM",
+                    "peRatioTTM",
+                    "priceEarningsRatioTTM",
+                    "peRatio",
+                ),
+                observed_at=observed_at,
+            )
+        if "pb_ratio" in val_section:
+            by_place[("valuation", "pb_ratio")] = vendor_figure_statement(
+                "ratios_ttm",
+                {"symbol": symbol},
+                ratios_row,
+                _first_present_key(ratios_row, "priceToBookRatioTTM", "pbRatioTTM", "pbRatio"),
+                observed_at=observed_at,
+            )
+        if "price_to_fcf" in val_section:
+            by_place[("valuation", "price_to_fcf")] = vendor_figure_statement(
+                "ratios_ttm",
+                {"symbol": symbol},
+                ratios_row,
+                "priceToFreeCashFlowRatioTTM",
+                observed_at=observed_at,
+            )
+        if "peg_ratio" in val_section:
+            if val_section.get("peg_source") == "FY1":
+                peg_ep = (
+                    "ratios_ttm"
+                    if _parse_metric(ratios_row, "forwardPriceToEarningsGrowthRatioTTM") is not None
+                    else "key_metrics_ttm"
+                )
+                peg_row = ratios_row if peg_ep == "ratios_ttm" else key_metrics_row
+                peg_field = "forwardPriceToEarningsGrowthRatioTTM"
+            else:
+                peg_candidates = ("priceToEarningsGrowthRatioTTM", "pegRatioTTM", "pegRatio")
+                if _parse_metric(ratios_row, *peg_candidates) is not None:
+                    peg_ep, peg_row = "ratios_ttm", ratios_row
+                else:
+                    peg_ep, peg_row = "key_metrics_ttm", key_metrics_row
+                peg_field = _first_present_key(peg_row, *peg_candidates)
+            by_place[("valuation", "peg_ratio")] = vendor_figure_statement(
+                peg_ep, {"symbol": symbol}, peg_row, peg_field, observed_at=observed_at
+            )
+        if "ev_ebitda" in val_section:
+            ev_eb_candidates = ("enterpriseValueMultipleTTM", "evToEbitdaTTM")
+            if _parse_metric(ratios_row, *ev_eb_candidates) is not None:
+                ev_eb_ep, ev_eb_row = "ratios_ttm", ratios_row
+            else:
+                ev_eb_ep, ev_eb_row = "key_metrics_ttm", key_metrics_row
+            by_place[("valuation", "ev_ebitda")] = vendor_figure_statement(
+                ev_eb_ep,
+                {"symbol": symbol},
+                ev_eb_row,
+                _first_present_key(ev_eb_row, *ev_eb_candidates),
+                observed_at=observed_at,
+            )
+        if "ev_sales" in val_section:
+            if val_section.get("ev_sales_source") == "FY1":
+                ev_ep = (
+                    "ratios_ttm"
+                    if _parse_metric(ratios_row, "enterpriseValueTTM") is not None
+                    else "key_metrics_ttm"
+                )
+                ev_row = ratios_row if ev_ep == "ratios_ttm" else key_metrics_row
+                ev_stmt = vendor_figure_statement(
+                    ev_ep,
+                    {"symbol": symbol},
+                    ev_row,
+                    "enterpriseValueTTM",
+                    observed_at=observed_at,
+                )
+                rev_est_stmt = vendor_figure_statement(
+                    "analyst_estimates",
+                    {"symbol": symbol, "period": "annual"},
+                    fy1_row,
+                    "revenueAvg",
+                    observed_at=observed_at,
+                )
+                by_place[("valuation", "ev_sales")] = computed_statement(
+                    operation="divide",
+                    inputs=[
+                        {**ev_stmt, "kind": "statement"},
+                        {**rev_est_stmt, "kind": "statement"},
+                    ],
+                    period=rev_est_stmt["period"],
+                )
+            else:
+                by_place[("valuation", "ev_sales")] = vendor_figure_statement(
+                    "ratios_ttm",
+                    {"symbol": symbol},
+                    ratios_row,
+                    "priceToSalesRatioTTM",
+                    observed_at=observed_at,
+                )
+        if "dividend_yield" in val_section:
+            by_place[("valuation", "dividend_yield")] = vendor_figure_statement(
+                "ratios_ttm",
+                {"symbol": symbol},
+                ratios_row,
+                _first_present_key(
+                    ratios_row,
+                    "dividendYielTTM",
+                    "dividendYieldTTM",
+                    "dividendYielPercentageTTM",
+                    "dividendYieldPercentageTTM",
+                    "dividendYield",
+                ),
+                observed_at=observed_at,
+            )
+        if "sector_avg_pe" in val_section:
+            by_place[("valuation", "sector_avg_pe")] = vendor_figure_statement(
+                "sector_pe_snapshot",
+                {"date": response["as_of"]},
+                {},
+                "pe",
+                observed_at=observed_at,
+            )
+
+    prof_section = response.get("profitability")
+    if isinstance(prof_section, dict):
+        for out_key, ep, row, candidates in (
+            ("roe", "ratios_ttm", ratios_row, ("returnOnEquityTTM", "roeTTM", "returnOnEquity")),
+            ("roic", "key_metrics_ttm", key_metrics_row, ("returnOnInvestedCapitalTTM",)),
+            (
+                "gross_margin",
+                "ratios_ttm",
+                ratios_row,
+                ("grossProfitMarginTTM", "grossMarginTTM", "grossProfitMargin"),
+            ),
+            (
+                "operating_margin",
+                "ratios_ttm",
+                ratios_row,
+                ("operatingProfitMarginTTM", "operatingMarginTTM", "operatingProfitMargin"),
+            ),
+            (
+                "net_profit_margin",
+                "ratios_ttm",
+                ratios_row,
+                ("netProfitMarginTTM", "profitMarginTTM", "netProfitMargin"),
+            ),
+        ):
+            if out_key in prof_section:
+                by_place[("profitability", out_key)] = vendor_figure_statement(
+                    ep,
+                    {"symbol": symbol},
+                    row,
+                    _first_present_key(row, *candidates),
+                    observed_at=observed_at,
+                )
+
+    bs_section = response.get("balance_sheet")
+    if isinstance(bs_section, dict):
+        for out_key, ep, row, candidates in (
+            (
+                "debt_to_equity",
+                "ratios_ttm",
+                ratios_row,
+                ("debtToEquityRatioTTM", "debtEquityRatioTTM", "debtToEquityTTM", "debtToEquity"),
+            ),
+            ("current_ratio", "ratios_ttm", ratios_row, ("currentRatioTTM", "currentRatio")),
+            ("net_debt_to_ebitda", "key_metrics_ttm", key_metrics_row, ("netDebtToEBITDATTM",)),
+        ):
+            if out_key in bs_section:
+                by_place[("balance_sheet", out_key)] = vendor_figure_statement(
+                    ep,
+                    {"symbol": symbol},
+                    row,
+                    _first_present_key(row, *candidates),
+                    observed_at=observed_at,
+                )
+
+    qual_section = response.get("quality")
+    if isinstance(qual_section, dict):
+        inc_rows = _records_from_payload(raw_results.get("income_statements"))
+        base_stmt = vendor_figure_statement(
+            "income_statement",
+            {"symbol": symbol, "period": "annual"},
+            inc_rows[0] if inc_rows else {},
+            "revenue",
+            observed_at=observed_at,
+        )
+        for place in figure_places(qual_section, ("quality",)):
+            by_place[place] = computed_statement(
+                operation="quality_signal",
+                parameters={"metric": ".".join(str(p) for p in place[1:])},
+                inputs=[{**base_stmt, "kind": "statement"}],
+                period={"kind": "not_stated", "reason": "period_not_recorded"},
+            )
+
+    tech_section = response.get("technicals")
+    if isinstance(tech_section, dict):
+        price_bar_stmt = vendor_figure_statement(
+            "historical_price_adjusted",
+            {"symbol": symbol},
+            {},
+            "adjClose",
+            observed_at=observed_at,
+        )
+        for place in figure_places(tech_section, ("technicals",)):
+            by_place[place] = computed_statement(
+                operation=str(place[-1]),
+                parameters={"symbol": symbol},
+                inputs=[{**price_bar_stmt, "kind": "statement"}],
+                period={"kind": "as_of", "at": response["as_of"], "status": "actual"},
+            )
+
+    chart_section = response.get("chart")
+    if isinstance(chart_section, list):
+        for idx, row in enumerate(chart_section):
+            if not isinstance(row, dict):
+                continue
+            if "price" in row:
+                by_place[("chart", idx, "price")] = vendor_figure_statement(
+                    "historical_price_adjusted",
+                    {"symbol": symbol},
+                    row,
+                    "adjClose",
+                    observed_at=observed_at,
+                )
+            if "volume" in row:
+                by_place[("chart", idx, "volume")] = vendor_figure_statement(
+                    "historical_price_adjusted",
+                    {"symbol": symbol},
+                    row,
+                    "volume",
+                    observed_at=observed_at,
+                )
+
+    return statements_table(by_place)
+
+
+@returns_vendor_lineage("get_stock_fundamentals")
 def get_stock_fundamentals(
     symbol: str | None = None,
     include: list[str] | None = None,
@@ -724,13 +1061,30 @@ def get_stock_fundamentals(
             sym: get_stock_fundamentals(symbol=sym, include=include, format=format)
             for sym in symbol_list
         }
-        return {
+        batch_by_place: dict[tuple[str | int, ...], dict[str, Any]] = {}
+        for idx, sym in enumerate(symbol_list):
+            res = results_by_symbol[sym]
+            sym_stmts = res.get("statements") or []
+            if not sym_stmts:
+                continue
+            resolved_sym = resolve_statements(
+                sym_stmts,
+                {k: v for k, v in res.items() if k not in ("statements", "lineage_descriptor")},
+            )
+            for place, stmt in resolved_sym.items():
+                wire = stmt.model_dump(mode="json")
+                batch_by_place[("results_by_symbol", sym, *place)] = wire
+                batch_by_place[("results", idx, *place)] = wire
+        batch_out: dict[str, Any] = {
             "status": _batch_status(results_by_symbol),
             "symbols": symbol_list,
             "count": len(results_by_symbol),
             "results_by_symbol": results_by_symbol,
             "results": list(results_by_symbol.values()),
         }
+        if batch_by_place:
+            batch_out["statements"] = statements_table(batch_by_place)
+        return batch_out
 
     normalized_symbol = str(symbol or "").upper().strip()
     _saved = sys.stdout
@@ -850,15 +1204,15 @@ def get_stock_fundamentals(
         max_workers = max(1, min(len(fetch_specs) + int(needs_forward_pe) + int(needs_technicals), 8))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for key, endpoint_name, params in fetch_specs:
-                future = executor.submit(_fetch_raw_task, client, key, endpoint_name, **params)
+                future = executor.submit(contextvars.copy_context().run, _fetch_raw_task, client, key, endpoint_name, **params)
                 futures[future] = key
 
             if needs_forward_pe:
-                future = executor.submit(_fetch_last_reported_date_task, client, normalized_symbol)
+                future = executor.submit(contextvars.copy_context().run, _fetch_last_reported_date_task, client, normalized_symbol)
                 futures[future] = "last_reported_fiscal_date"
 
             if needs_technicals:
-                future = executor.submit(_fetch_technical_task, normalized_symbol)
+                future = executor.submit(contextvars.copy_context().run, _fetch_technical_task, normalized_symbol)
                 futures[future] = "technicals"
 
             for future in as_completed(futures):
@@ -915,6 +1269,9 @@ def get_stock_fundamentals(
                 last_reported,
             )
 
+        observed_at = datetime.now(timezone.utc)
+        financial_statements: dict[str, dict[str, Any]] = {}
+
         for section_name in requested_sections:
             section_warnings: list[str] = []
             section_data: Any = None
@@ -949,6 +1306,8 @@ def get_stock_fundamentals(
                 section_data, builder_warnings = _build_financials(
                     raw_results.get("quarterly_income"),
                     raw_results.get("quarterly_cash_flow"),
+                    observed_at=observed_at,
+                    statement_out=financial_statements,
                 )
                 section_warnings.extend(builder_warnings)
 
@@ -1059,6 +1418,18 @@ def get_stock_fundamentals(
                     "tool": "fmp_search",
                     "arguments": {"query": normalized_symbol},
                 }
+
+        if response["sections_included"]:
+            stmts = _stock_fundamentals_statements(
+                symbol=normalized_symbol,
+                response=response,
+                raw_results=raw_results,
+                financial_statements=financial_statements,
+                forward_pe_result=forward_pe_result,
+                observed_at=observed_at,
+            )
+            if stmts:
+                response["statements"] = stmts
 
         return response
 

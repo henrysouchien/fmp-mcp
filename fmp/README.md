@@ -168,7 +168,7 @@ df = fmp.fetch("income_statement", symbol="AAPL", use_cache=False)
 
 `FMPClient` includes a built-in sliding-window rate limiter (default: 700 calls/min, 50-call buffer under the 750/min plan limit). All API calls go through `_make_request()` which enforces this automatically — no manual `time.sleep()` needed.
 
-If a 429 (rate limited) response is received despite the proactive limiter (e.g., due to cross-process API key contention), the client retries up to 3 times with 30-second backoff before raising `FMPRateLimitError`.
+If a 429 (rate limited) response is received despite the proactive limiter (e.g., due to cross-process API key contention), the client makes up to 3 total dispatch attempts by default, with 30-second backoff between attempts, before raising `FMPRateLimitError`. Configure the total with `rate_limit_attempts`.
 
 ```python
 # Custom rate limit (e.g., for shared API keys)
@@ -268,6 +268,8 @@ Use the FMP package at `fmp/` to [describe analysis task].
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -300,6 +302,8 @@ Use the FMP package at `fmp/` to analyze price performance.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -322,6 +326,8 @@ Use the FMP package at `fmp/` to analyze free cash flow generation.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -344,6 +350,8 @@ Use the FMP package at `fmp/` to analyze Treasury yield curve changes.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -368,6 +376,8 @@ Use the FMP package at `fmp/` to search for companies.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -388,6 +398,8 @@ Use the FMP package at `fmp/` to analyze dividend history.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -409,6 +421,8 @@ Use the FMP package at `fmp/` to analyze analyst expectations.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -432,6 +446,8 @@ Use the FMP package at `fmp/` to research a company's SEC filings.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -464,6 +480,8 @@ Use the FMP package at `fmp/` to analyze a company's earnings call.
 
 ```python
 from fmp import FMPClient
+from fmp.client import configure_client
+configure_client()
 fmp = FMPClient()
 ```
 
@@ -513,11 +531,11 @@ The FMP layer exposes estimate revision tools backed by the hosted estimates API
 
 ### How It Works
 
-The Risk-local script (`scripts/snapshot_estimates.py`, outside the installed package) fetches consensus estimates for all FMP-covered tickers and stores them in a dedicated Postgres database (`fmp_data_db`). Writes prefer `FMP_DATA_WRITE_DATABASE_URL`; reads prefer `FMP_DATA_READ_DATABASE_URL`; `FMP_DATA_DATABASE_URL` remains as the legacy fallback. Production least-privilege deployments should set `FMP_DATA_ENSURE_SCHEMA=false` and apply schema changes separately. Each snapshot is immutable — over time, the database accumulates a history of how the Street's estimates have moved.
+Production collection runs in the `edgar_updater` EC2 collector, not this package or a Risk-local script. The former `scripts/snapshot_estimates.py`, launchd template, and tests were [deleted in `fee0d9403`](https://github.com/henrysouchien/risk_module/commit/fee0d9403). See [estimate operations](../../docs/reference/EARNINGS_ESTIMATES.md) for the current production owner.
 
-### Usage (local fallback / collector — not the MCP primary path)
+### Direct local store usage (not the MCP query path)
 
-MCP tools `get_estimate_revisions` / `screen_estimate_revisions` use `fmp/tools/estimates.py` → `ESTIMATE_API_URL` (default `https://www.edgarparser.com`; optional `EDGAR_API_KEY`). `EstimateStore` + `FMP_DATA_*` URLs remain for local/dev and `snapshot_estimates.py` writes.
+MCP tools `get_estimate_revisions` / `screen_estimate_revisions` use `fmp/tools/estimates.py` → `ESTIMATE_API_URL` (default `https://www.edgarparser.com`; optional `EDGAR_API_KEY`). `EstimateStore` remains available for direct Postgres access using the `FMP_DATA_*` URLs; the example below does not collect snapshots.
 
 ```python
 from fmp.estimate_store import EstimateStore
@@ -549,33 +567,6 @@ Two query tools are available via the `fmp-mcp` server:
 | `get_estimate_revisions` | Revision history for a single ticker (snapshot-by-snapshot deltas) |
 | `screen_estimate_revisions` | Screen across tickers for estimate momentum (up/down/all) |
 
-### Collection Script
-
-```bash
-# Full universe collection (monthly cron) — uses bulk∩screener intersection by default
-python3 scripts/snapshot_estimates.py
-
-# Use screener-only universe (legacy, no bulk filtering)
-python3 scripts/snapshot_estimates.py --universe-source screener
-
-# Test with specific tickers
-python3 scripts/snapshot_estimates.py --tickers AAPL,NVDA,MSFT
-
-# Force re-snapshot (bypass freshness check)
-python3 scripts/snapshot_estimates.py --tickers AAPL --force
-
-# Override DB connection for one run
-python3 scripts/snapshot_estimates.py --database-url postgresql://postgres@localhost:5432/fmp_data_db
-
-# Key flags
-#   --universe-source bulk  Universe method: bulk (screener∩earnings-surprises-bulk) or screener
-#   --bulk-years 2          Years of bulk data to union (default: 2)
-#   --delay-ms 100          Delay between API calls in ms (default: 100)
-#   --freshness-days 28     Skip tickers snapshotted within N days (default: 28)
-#   --force                 Bypass freshness check
-#   --no-resume             Don't resume a prior interrupted run
-#   --universe-limit 100    Limit ticker universe (for testing)
-```
 
 ### Storage
 
